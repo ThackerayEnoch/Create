@@ -15,7 +15,8 @@
       2. Install / replace all stations
       3. Update one station
       4. Add one station
-      5. Exit
+      5. Delete one station
+      6. Exit
 ]]
 
 local CONFIG_PATH = "/config.lua"
@@ -681,7 +682,8 @@ local function showStartupMenu(config)
     print("[2] Install / replace all stations")
     print("[3] Update one station")
     print("[4] Add one station")
-    print("[5] Exit")
+    print("[5] Delete one station")
+    print("[6] Exit")
     print()
     print("Default: Run controller in 5 seconds")
     write("Select mode: ")
@@ -864,6 +866,144 @@ local function updateOne()
 end
 
 --------------------------------------------------
+-- Find physical station for an existing config entry
+--------------------------------------------------
+
+local function findPhysicalStationForEntry(entry)
+    -- Fast path: current peripheral identifier
+    if entry.physicalStation
+        and peripheral.isPresent(entry.physicalStation)
+        and peripheral.getType(entry.physicalStation) == "Create_Station" then
+
+        local station = peripheral.wrap(entry.physicalStation)
+        if station then
+            local ok, currentName = pcall(function()
+                return station.getStationName()
+            end)
+
+            if ok and (
+                currentName == entry.stationName
+                or currentName == entry.disabledName
+            ) then
+                return station
+            end
+        end
+    end
+
+    -- Recovery path: peripheral name may have changed.
+    for _, peripheralName in ipairs(peripheral.getNames()) do
+        if peripheral.getType(peripheralName) == "Create_Station" then
+            local station = peripheral.wrap(peripheralName)
+            if station then
+                local ok, currentName = pcall(function()
+                    return station.getStationName()
+                end)
+
+                if ok and (
+                    currentName == entry.stationName
+                    or currentName == entry.disabledName
+                ) then
+                    return station
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+--------------------------------------------------
+-- Delete one station
+--------------------------------------------------
+
+local function deleteOne()
+    local config = loadConfig()
+
+    if not config or #config.stations == 0 then
+        print("No existing configuration. Nothing to delete.")
+        pause()
+        return
+    end
+
+    clearScreen()
+    print("========================================")
+    print("             DELETE STATION")
+    print("========================================")
+    print()
+
+    for i, station in ipairs(config.stations) do
+        print("[" .. i .. "] " .. station.stationName)
+        print("    Item: " .. station.item)
+        print("    Inventory: " .. station.inventoryPeripheral)
+        print()
+    end
+
+    local index = tonumber(ask("Select station to delete"))
+
+    if not index or not config.stations[index] then
+        print("Invalid selection.")
+        pause()
+        return
+    end
+
+    local entry = config.stations[index]
+
+    print()
+    print("Selected station:")
+    print("    " .. entry.stationName)
+    print("    Item: " .. entry.item)
+    print()
+
+    if not askYesNo("Delete this station from the configuration?", "n") then
+        print("Delete cancelled.")
+        pause()
+        return
+    end
+
+    -- If the station is currently disabled, restore its normal name
+    -- before removing it from the controller configuration.
+    local physical = findPhysicalStationForEntry(entry)
+
+    if physical then
+        local ok, currentName = pcall(function()
+            return physical.getStationName()
+        end)
+
+        if ok and currentName == entry.disabledName then
+            local renameOk, renameErr = pcall(function()
+                physical.setStationName(entry.stationName)
+            end)
+
+            if not renameOk then
+                print("Failed to restore station name:")
+                print(tostring(renameErr))
+                print("Delete cancelled.")
+                pause()
+                return
+            end
+        end
+    end
+
+    table.remove(config.stations, index)
+
+    -- Rebuild ids so they remain compact and deterministic.
+    for i, station in ipairs(config.stations) do
+        station.id = "station_" .. tostring(i)
+    end
+
+    writeConfig(config)
+    installStationProgram()
+    installInstallerProgram()
+    createStartup()
+
+    print()
+    print("Station deleted successfully.")
+    print("Deleted: " .. entry.stationName)
+    print("Remaining stations: " .. tostring(#config.stations))
+    pause()
+end
+
+--------------------------------------------------
 -- Add one station to an existing configuration
 --------------------------------------------------
 
@@ -982,6 +1122,9 @@ while true do
         addOne()
 
     elseif choice == "5" then
+        deleteOne()
+
+    elseif choice == "6" then
         break
 
     else

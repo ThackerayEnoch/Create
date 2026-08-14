@@ -275,9 +275,35 @@ local function centerText(monitor, y, text, colour)
     monitor.write(value)
 end
 
-local function drawProgressBar(monitor, x, y, width, percent)
-    local clamped = math.max(0, math.min(100, tonumber(percent) or 0))
-    local filled = math.floor(width * clamped / 100)
+local function drawProgressBar(
+    monitor,
+    x,
+    y,
+    width,
+    percent,
+    lowThreshold
+)
+    local clamped =
+        math.max(
+            0,
+            math.min(
+                100,
+                tonumber(percent) or 0
+            )
+        )
+
+    local filled =
+        math.floor(
+            width * clamped / 100
+        )
+
+    -- Stock is only red when it is below the station's
+    -- configured minimum/enable threshold.
+    local fillColour = colors.lime
+
+    if clamped < (tonumber(lowThreshold) or 0) then
+        fillColour = colors.red
+    end
 
     paintutils.drawFilledBox(
         x,
@@ -288,14 +314,6 @@ local function drawProgressBar(monitor, x, y, width, percent)
     )
 
     if filled > 0 then
-        local fillColour = colors.lime
-
-        if clamped >= 80 then
-            fillColour = colors.red
-        elseif clamped >= 60 then
-            fillColour = colors.yellow
-        end
-
         paintutils.drawFilledBox(
             x,
             y,
@@ -306,136 +324,387 @@ local function drawProgressBar(monitor, x, y, width, percent)
     end
 end
 
-local function drawStatusBox(monitor, x, y, width, state)
-    local borderColour = colors.lime
-    local statusColour = colors.lime
-    local text = "REQUEST ENABLED"
+local function drawStatusText(
+    monitor,
+    x,
+    y,
+    state
+)
+    local label = "ONLINE"
+    local colour = colors.lime
 
     if state == "disabled" then
-        borderColour = colors.red
-        statusColour = colors.red
-        text = "REQUEST DISABLED"
+        label = "OFFLINE"
+        -- OFFLINE is still a normal station state, not a low-stock alarm.
+        -- Per the requested UI semantics, only low stock is red.
+        colour = colors.lime
     elseif state == "error" then
-        borderColour = colors.orange
-        statusColour = colors.orange
-        text = "ERROR"
+        label = "ERROR"
+        colour = colors.orange
     end
 
-    paintutils.drawBox(
-        x,
-        y,
-        x + width - 1,
-        y + 2,
-        borderColour
+    setMonitorColours(
+        monitor,
+        colour,
+        colors.black
     )
 
-    setMonitorColours(monitor, statusColour, colors.black)
-    monitor.setCursorPos(x + 3, y + 1)
-    monitor.write(text)
+    monitor.setCursorPos(x, y)
+    monitor.write(label)
 end
 
-local function shortName(name, width)
-    local value = tostring(name or "")
-    if #value <= width then
-        return value
-    end
-    if width <= 3 then
-        return value:sub(1, width)
-    end
-    return value:sub(1, width - 3) .. "..."
-end
-
-local function drawDashboard(monitor, rows)
+local function drawDashboard(
+    monitor,
+    rows
+)
     if not monitor then
         return
     end
 
     monitor.setTextScale(0.5)
     monitor.clear()
-    setMonitorColours(monitor, colors.white, colors.black)
+    setMonitorColours(
+        monitor,
+        colors.white,
+        colors.black
+    )
 
-    local width, height = monitor.getSize()
+    local width, height =
+        monitor.getSize()
 
-    centerText(monitor, 1, "FACTORY REQUEST CONTROLLER", colors.white)
-    centerText(monitor, 2, "MULTI-STATION STATUS", colors.cyan)
-    drawHorizontalLine(monitor, 4, colors.blue)
+    centerText(
+        monitor,
+        1,
+        "FACTORY REQUEST CONTROLLER",
+        colors.white
+    )
 
-    local usableHeight = height - 6
-    local rowHeight = 3
-    local maxRows = math.max(1, math.floor(usableHeight / rowHeight))
-    local shown = math.min(#rows, maxRows)
+    centerText(
+        monitor,
+        2,
+        "MULTI-STATION STATUS",
+        colors.cyan
+    )
 
-    -- Keep the station and item columns wide enough for real factory names.
-    -- The progress/status column gets the remaining space.
-    -- Give the item column the most space because item IDs/names are often long.
-    -- Layout target: STATION ~30%, ITEM ~45%, STOCK ~25%.
-    local nameWidth = math.max(14, math.floor(width * 0.30))
-    local itemWidth = math.max(22, math.floor(width * 0.45))
-    local barStart = nameWidth + itemWidth + 4
-    local barWidth = math.max(8, width - barStart - 8)
+    drawHorizontalLine(
+        monitor,
+        4,
+        colors.blue
+    )
 
+    --------------------------------------------------
+    -- Layout
+    --
+    -- STATION : 30%
+    -- ITEM    : 35%
+    -- STOCK   : 25%
+    -- STATUS  : remaining
+    --
+    -- The stock column contains:
+    --     actual / maximum  xx.x%
+    --------------------------------------------------
+
+    local stationWidth =
+        math.max(
+            16,
+            math.floor(width * 0.30)
+        )
+
+    local itemWidth =
+        math.max(
+            20,
+            math.floor(width * 0.35)
+        )
+
+    local stockWidth =
+        math.max(
+            18,
+            math.floor(width * 0.25)
+        )
+
+    local statusStart =
+        stationWidth
+        + itemWidth
+        + stockWidth
+        + 4
+
+    -- Prevent the status column from falling outside the display.
+    if statusStart > width - 7 then
+        stockWidth =
+            math.max(
+                14,
+                width
+                    - stationWidth
+                    - itemWidth
+                    - 12
+            )
+
+        statusStart =
+            stationWidth
+            + itemWidth
+            + stockWidth
+            + 4
+    end
+
+    --------------------------------------------------
     -- Column headers
-    setMonitorColours(monitor, colors.lightGray, colors.black)
+    --------------------------------------------------
+
+    setMonitorColours(
+        monitor,
+        colors.lightGray,
+        colors.black
+    )
+
     monitor.setCursorPos(1, 5)
-    monitor.write(shortName("STATION", nameWidth))
-    monitor.setCursorPos(nameWidth + 2, 5)
-    monitor.write(shortName("ITEM", itemWidth))
-    monitor.setCursorPos(barStart, 5)
-    monitor.write("STOCK")
+    monitor.write(
+        shortName(
+            "STATION",
+            stationWidth
+        )
+    )
+
+    monitor.setCursorPos(
+        stationWidth + 2,
+        5
+    )
+
+    monitor.write(
+        shortName(
+            "ITEM",
+            itemWidth
+        )
+    )
+
+    monitor.setCursorPos(
+        stationWidth
+        + itemWidth
+        + 3,
+        5
+    )
+
+    monitor.write(
+        shortName(
+            "STOCK",
+            stockWidth
+        )
+    )
+
+    monitor.setCursorPos(
+        statusStart,
+        5
+    )
+
+    monitor.write("STATUS")
+
+    --------------------------------------------------
+    -- Rows
+    --------------------------------------------------
+
+    local usableHeight =
+        height - 6
+
+    local rowHeight = 3
+
+    local maxRows =
+        math.max(
+            1,
+            math.floor(
+                usableHeight / rowHeight
+            )
+        )
+
+    local shown =
+        math.min(
+            #rows,
+            maxRows
+        )
 
     local y = 6
 
     for i = 1, shown do
+
         local row = rows[i]
-        local stateColour = colors.lime
 
-        if row.state == "disabled" then
-            stateColour = colors.red
-        elseif row.state == "error" then
-            stateColour = colors.orange
-        end
+        --------------------------------------------------
+        -- Station
+        --------------------------------------------------
 
-        -- Station name column
-        setMonitorColours(monitor, colors.white, colors.black)
-        monitor.setCursorPos(1, y)
-        monitor.write(shortName(row.stationName, nameWidth))
-
-        -- Item column: wider than the previous layout
-        setMonitorColours(monitor, colors.cyan, colors.black)
-        monitor.setCursorPos(nameWidth + 2, y)
-        monitor.write(shortName(row.item, itemWidth))
-
-        -- Progress bar in the remaining column
-        drawProgressBar(
+        setMonitorColours(
             monitor,
-            barStart,
-            y,
-            barWidth,
-            row.percent
+            colors.white,
+            colors.black
         )
 
-        -- Percentage and status below the item/progress row
-        setMonitorColours(monitor, stateColour, colors.black)
-        monitor.setCursorPos(nameWidth + 2, y + 1)
-        monitor.write(string.format("%6.1f%%", row.percent))
+        monitor.setCursorPos(
+            1,
+            y
+        )
 
-        monitor.setCursorPos(barStart, y + 1)
-        monitor.write(row.state == "enabled" and "ONLINE"
-            or row.state == "disabled" and "OFFLINE"
-            or "ERROR")
+        monitor.write(
+            shortName(
+                row.stationName,
+                stationWidth
+            )
+        )
 
-        y = y + rowHeight
+        --------------------------------------------------
+        -- Item
+        --------------------------------------------------
+
+        setMonitorColours(
+            monitor,
+            colors.cyan,
+            colors.black
+        )
+
+        monitor.setCursorPos(
+            stationWidth + 2,
+            y
+        )
+
+        monitor.write(
+            shortName(
+                row.item,
+                itemWidth
+            )
+        )
+
+        --------------------------------------------------
+        -- Stock
+        --
+        -- Example:
+        -- 3,215/4,096 78.5%
+        --------------------------------------------------
+
+        local stockX =
+            stationWidth
+            + itemWidth
+            + 3
+
+        local stockText =
+            formatNumber(
+                row.count
+            )
+            .. "/"
+            .. formatNumber(
+                row.capacity
+            )
+            .. " "
+            .. string.format(
+                "%.1f%%",
+                row.percent
+            )
+
+        local stockColour =
+            colors.lime
+
+        if row.state == "error" then
+            stockColour = colors.orange
+        elseif row.percent
+            < row.enablePercent then
+            stockColour = colors.red
+        end
+
+        setMonitorColours(
+            monitor,
+            stockColour,
+            colors.black
+        )
+
+        monitor.setCursorPos(
+            stockX,
+            y
+        )
+
+        monitor.write(
+            shortName(
+                stockText,
+                stockWidth
+            )
+        )
+
+        --------------------------------------------------
+        -- Stock progress bar
+        --------------------------------------------------
+
+        local progressWidth =
+            math.max(
+                8,
+                math.min(
+                    stockWidth - 2,
+                    20
+                )
+            )
+
+        drawProgressBar(
+            monitor,
+            stockX,
+            y + 1,
+            progressWidth,
+            row.percent,
+            row.enablePercent
+        )
+
+        --------------------------------------------------
+        -- Status
+        --------------------------------------------------
+
+        drawStatusText(
+            monitor,
+            statusStart,
+            y,
+            row.state
+        )
+
+        y =
+            y + rowHeight
     end
 
-    drawHorizontalLine(monitor, height - 2, colors.blue)
+    --------------------------------------------------
+    -- Footer
+    --------------------------------------------------
 
-    setMonitorColours(monitor, colors.lime, colors.black)
-    monitor.setCursorPos(2, height - 1)
-    monitor.write("ENABLE < 20%")
+    drawHorizontalLine(
+        monitor,
+        height - 2,
+        colors.blue
+    )
 
-    setMonitorColours(monitor, colors.red, colors.black)
-    monitor.setCursorPos(math.max(16, math.floor(width / 2)), height - 1)
-    monitor.write("DISABLE >= 80%")
+    setMonitorColours(
+        monitor,
+        colors.lime,
+        colors.black
+    )
+
+    monitor.setCursorPos(
+        2,
+        height - 1
+    )
+
+    monitor.write(
+        "ENABLE < MIN"
+    )
+
+    setMonitorColours(
+        monitor,
+        colors.white,
+        colors.black
+    )
+
+    monitor.setCursorPos(
+        math.max(
+            16,
+            math.floor(
+                width / 2
+            )
+        ),
+        height - 1
+    )
+
+    monitor.write(
+        "DISABLE >= MAX"
+    )
 end
 
 --------------------------------------------------
@@ -464,6 +733,9 @@ while true do
             item = entry.item,
             percent = 0,
             count = 0,
+            capacity = entry.capacity or 0,
+            enablePercent = entry.enablePercent or 20,
+            disablePercent = entry.disablePercent or 80,
             state = "error"
         }
 
