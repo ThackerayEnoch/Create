@@ -1,31 +1,25 @@
 --[[
-    Create Train Station Unloading Controller
-    Installation Program
+    Create Factory Train Station Controller
+    Multi-station Installation / Update Program
 
-    Current design:
+    One Computer controls multiple request stations in one factory.
+    Each station has its own:
+      - Train Station
+      - Inventory peripheral
+      - Requested item
+      - Capacity
+      - Enable / disable thresholds
 
-    One Computer
-        ↓
-    A factory Wired Modem network
-        ↓
-    One Train Station
-        ↓
-    One inventory device
-
-    The installer is responsible for:
-        1. Scanning for Create_Station devices
-        2. The player selecting the physical station
-        3. The player entering the formal station name
-        4. Checking for station name conflicts
-        5. Setting the station name
-        6. Scanning for inventory devices
-        7. The player selecting the inventory
-        8. Configuring the item and capacity
-        9. Configuring the 20% / 80% thresholds
-        10. Generating config.lua
-        11. Installing station.lua
-        12. Creating startup.lua
+    Startup menu:
+      1. Run controller
+      2. Install / replace all stations
+      3. Update one station
+      4. Exit
 ]]
+
+local CONFIG_PATH = "/config.lua"
+local INSTALL_PATH = "/install.lua"
+local STATION_PROGRAM_PATH = "/station.lua"
 
 --------------------------------------------------
 -- Basic utilities
@@ -36,16 +30,13 @@ local function clearScreen()
     term.setCursorPos(1, 1)
 end
 
-
 local function pause()
     print()
     print("Press ENTER to continue...")
     read()
 end
 
-
 local function ask(prompt, default)
-
     if default ~= nil then
         write(prompt .. " [" .. tostring(default) .. "]: ")
     else
@@ -61,212 +52,194 @@ local function ask(prompt, default)
     return value
 end
 
-
 local function askNumber(prompt, default, min, max)
-
     while true do
-
         local value = ask(prompt, default)
-
         local number = tonumber(value)
 
-        if number then
-
-            if (min == nil or number >= min)
-                and (max == nil or number <= max) then
-
-                return number
-
-            end
-
+        if number
+            and (min == nil or number >= min)
+            and (max == nil or number <= max) then
+            return number
         end
 
-        print("Invalid input, please try again.")
+        print("Invalid number, please try again.")
     end
 end
 
-
 local function askYesNo(prompt, default)
-
     while true do
+        local value = string.lower(tostring(ask(prompt, default)))
 
-        local value =
-            ask(prompt, default)
-
-        value =
-            string.lower(
-                tostring(value)
-            )
-
-        if value == "y"
-            or value == "yes" then
-
+        if value == "y" or value == "yes" then
             return true
-
         end
 
-        if value == "n"
-            or value == "no" then
-
+        if value == "n" or value == "no" then
             return false
-
         end
 
         print("Please enter y or n.")
     end
 end
 
+local function safeReadFile(path)
+    if not fs.exists(path) then
+        return nil
+    end
+
+    local file = fs.open(path, "r")
+    if not file then
+        return nil
+    end
+
+    local content = file.readAll()
+    file.close()
+    return content
+end
 
 --------------------------------------------------
--- Find Create Station
+-- Config loading
+--------------------------------------------------
+
+local function loadConfig()
+    if not fs.exists(CONFIG_PATH) then
+        return nil
+    end
+
+    local ok, result = pcall(dofile, CONFIG_PATH)
+
+    if not ok or type(result) ~= "table" then
+        print("ERROR: config.lua is invalid.")
+        print(tostring(result))
+        return nil
+    end
+
+    if type(result.stations) ~= "table" then
+        result.stations = {}
+    end
+
+    return result
+end
+
+--------------------------------------------------
+-- Write config.lua
+--------------------------------------------------
+
+local function luaString(value)
+    return string.format("%q", tostring(value or ""))
+end
+
+local function writeConfig(config)
+    local file = fs.open(CONFIG_PATH, "w")
+    if not file then
+        error("Unable to create config.lua")
+    end
+
+    file.writeLine("return {")
+    file.writeLine("    version = 2,")
+    file.writeLine("    checkInterval = " .. tostring(config.checkInterval or 5) .. ",")
+    file.writeLine("    stations = {")
+
+    for i, station in ipairs(config.stations) do
+        file.writeLine("        {")
+        file.writeLine("            id = " .. luaString(station.id) .. ",")
+        file.writeLine("            stationName = " .. luaString(station.stationName) .. ",")
+        file.writeLine("            disabledName = " .. luaString(station.disabledName) .. ",")
+        file.writeLine("            inventoryPeripheral = " .. luaString(station.inventoryPeripheral) .. ",")
+        file.writeLine("            inventoryType = " .. luaString(station.inventoryType) .. ",")
+        file.writeLine("            item = " .. luaString(station.item) .. ",")
+        file.writeLine("            capacity = " .. tostring(station.capacity) .. ",")
+        file.writeLine("            enablePercent = " .. tostring(station.enablePercent) .. ",")
+        file.writeLine("            disablePercent = " .. tostring(station.disablePercent))
+        file.writeLine("        }" .. (i < #config.stations and "," or ""))
+    end
+
+    file.writeLine("    }")
+    file.writeLine("}")
+    file.close()
+end
+
+--------------------------------------------------
+-- Create Station scanning
 --------------------------------------------------
 
 local function scanStations()
-
     local stations = {}
 
-    for _, peripheralName
-        in ipairs(peripheral.getNames()) do
-
-        local peripheralType =
-            peripheral.getType(
-                peripheralName
-            )
-
-        if peripheralType == "Create_Station" then
-
-            local station =
-                peripheral.wrap(
-                    peripheralName
-                )
+    for _, peripheralName in ipairs(peripheral.getNames()) do
+        if peripheral.getType(peripheralName) == "Create_Station" then
+            local station = peripheral.wrap(peripheralName)
 
             if station then
-
-                local ok, stationName =
-                    pcall(function()
-                        return station.getStationName()
-                    end)
+                local ok, stationName = pcall(function()
+                    return station.getStationName()
+                end)
 
                 if ok then
-
-                    table.insert(
-                        stations,
-                        {
-                            peripheralName =
-                                peripheralName,
-
-                            stationName =
-                                stationName,
-
-                            peripheral =
-                                station
-                        }
-                    )
-
+                    table.insert(stations, {
+                        peripheralName = peripheralName,
+                        stationName = tostring(stationName or ""),
+                        peripheral = station
+                    })
                 end
             end
         end
     end
 
+    table.sort(stations, function(a, b)
+        return a.peripheralName < b.peripheralName
+    end)
+
     return stations
 end
 
-
---------------------------------------------------
--- Select Train Station
---------------------------------------------------
-
-local function selectStation()
-
+local function selectStation(excludePeripheralName)
     while true do
-
-        local stations =
-            scanStations()
+        local stations = scanStations()
 
         clearScreen()
-
         print("========================================")
         print("        Train Station Selection")
-        print("================================")
+        print("========================================")
         print()
 
-        if #stations == 0 then
+        local visible = {}
 
-            print("No Create Train Station found.")
-            print()
-            print("Please check:")
-            print("1. The Wired Modem is connected")
-            print("2. The Train Station is connected to the network")
-            print("3. CC:Tweaked can detect the station")
-            print()
+        for _, station in ipairs(stations) do
+            if station.peripheralName ~= excludePeripheralName then
+                table.insert(visible, station)
+            end
+        end
 
+        if #visible == 0 then
+            print("No selectable Create Train Station found.")
+            print()
+            print("Check the Wired Modem connection.")
             pause()
-
         else
-
-            for i, station
-                in ipairs(stations) do
-
-                print(
-                    "[" .. i .. "] "
-                    .. station.peripheralName
-                )
-
-                print(
-                    "    Current name: "
-                    .. tostring(
-                        station.stationName
-                    )
-                )
-
+            for i, station in ipairs(visible) do
+                print("[" .. i .. "] " .. station.peripheralName)
+                print("    Current name: " .. station.stationName)
                 print()
-
             end
 
-            local choice =
-                tonumber(
-                    ask("Please select a station")
-                )
-
-            if choice
-                and stations[choice] then
-
-                return stations[choice]
+            local choice = tonumber(ask("Select station"))
+            if choice and visible[choice] then
+                return visible[choice]
             end
 
-            print()
             print("Invalid selection.")
             sleep(1)
-
         end
     end
 end
 
-
---------------------------------------------------
--- Check whether the station name already exists
---------------------------------------------------
-
-local function stationNameExists(
-    targetName,
-    selectedPeripheralName
-)
-
-    local stations =
-        scanStations()
-
-    for _, station
-        in ipairs(stations) do
-
-        if station.peripheralName
-            ~= selectedPeripheralName then
-
-            if station.stationName
-                == targetName then
-
-                return true,
-                    station.peripheralName
-
+local function stationNameUsed(config, name, excludedIndex)
+    for i, station in ipairs(config.stations or {}) do
+        if i ~= excludedIndex then
+            if station.stationName == name or station.disabledName == name then
+                return true, station
             end
         end
     end
@@ -274,158 +247,50 @@ local function stationNameExists(
     return false, nil
 end
 
-
---------------------------------------------------
--- Let the player set the station name
---------------------------------------------------
-
-local function configureStationName(
-    selectedStation
-)
-
+local function configureStationName(config, selectedStation, existingIndex)
     while true do
-
         clearScreen()
-
         print("========================================")
-        print("        Station Name Setup")
-        print("================================")
+        print("          Station Name Setup")
+        print("========================================")
+        print()
+        print("Physical device: " .. selectedStation.peripheralName)
+        print("Current name:    " .. selectedStation.stationName)
         print()
 
-        print(
-            "Physical device: "
-            .. selectedStation.peripheralName
-        )
-
-        print(
-            "Current name: "
-            .. tostring(
-                selectedStation.stationName
-            )
-        )
-
-        print()
-
-        print("Please enter the official station name.")
-        print()
-        print("Example:")
-        print("IronBlock_Request_Andesite_Alloy_Line")
-        print()
-
-        local stationName =
-            ask(
-                "Station name"
-            )
+        local defaultName = existingIndex and config.stations[existingIndex].stationName or ""
+        local stationName = ask("Official station name", defaultName)
 
         if stationName == "" then
-
-            print()
             print("Station name cannot be empty.")
             pause()
-
         else
-
-            --------------------------------------------------
-            -- Check for name conflicts
-            --------------------------------------------------
-
-            local exists,
-                conflictPeripheral =
-                stationNameExists(
-                    stationName,
-                    selectedStation.peripheralName
-                )
-
-            if exists then
-
-                print()
-                print("================================")
-                print("Name conflict!")
-                print("================================")
-                print()
-
-                print(
-                    "This name is already used by another station:"
-                )
-
-                print(
-                    stationName
-                )
-
-                print()
-
-                print(
-                    "Conflicting device: "
-                    .. tostring(
-                        conflictPeripheral
-                    )
-                )
-
+            local used, conflict = stationNameUsed(config, stationName, existingIndex)
+            if used then
+                print("Name conflict with: " .. tostring(conflict.stationName))
                 pause()
-
             else
+                local defaultDisabled = existingIndex
+                    and config.stations[existingIndex].disabledName
+                    or ("DISABLED_" .. stationName)
 
-                --------------------------------------------------
-                -- Generate the disabled name
-                --------------------------------------------------
+                local disabledName = ask("Disabled station name", defaultDisabled)
 
-                local disabledName =
-                    ask(
-                        "Disabled name",
-                        "DISABLED_" .. stationName
-                    )
-
-                if disabledName == "" then
-
-                    print(
-                        "Disabled name cannot be empty."
-                    )
-
+                if disabledName == "" or disabledName == stationName then
+                    print("Disabled name must be non-empty and different from the normal name.")
                     pause()
-
                 else
+                    local disabledUsed, disabledConflict = stationNameUsed(
+                        config,
+                        disabledName,
+                        existingIndex
+                    )
 
-                    --------------------------------------------------
-                    -- Check for disabled-name conflict
-                    --------------------------------------------------
-
-                    local disabledExists,
-                        disabledConflict =
-                        stationNameExists(
-                            disabledName,
-                            selectedStation.peripheralName
-                        )
-
-                    if disabledExists then
-
-                        print()
-                        print(
-                            "The disabled name is already in use:"
-                        )
-
-                        print(
-                            disabledName
-                        )
-
-                        print(
-                            "Conflicting device: "
-                            .. tostring(
-                                disabledConflict
-                            )
-                        )
-
+                    if disabledUsed then
+                        print("Disabled name conflicts with: " .. tostring(disabledConflict.stationName))
                         pause()
-
                     else
-
-                        return {
-                            stationName =
-                                stationName,
-
-                            disabledName =
-                                disabledName
-                        }
-
+                        return stationName, disabledName
                     end
                 end
             end
@@ -433,1023 +298,565 @@ local function configureStationName(
     end
 end
 
-
 --------------------------------------------------
--- Check whether the device supports the inventory interface
+-- Inventory scanning
 --------------------------------------------------
 
-local function getInventoryInfo(
-    peripheralName
-)
-
-    local device =
-        peripheral.wrap(
-            peripheralName
-        )
-
+local function getInventoryInfo(peripheralName)
+    local device = peripheral.wrap(peripheralName)
     if not device then
         return nil
     end
 
+    local ok, items = pcall(function()
+        return device.list()
+    end)
 
-    --------------------------------------------------
-    -- Test list()
-    --------------------------------------------------
-
-    local ok, result =
-        pcall(function()
-
-            return device.list()
-
-        end)
-
-
-    if not ok then
+    if not ok or type(items) ~= "table" then
         return nil
     end
-
-
-    if type(result) ~= "table" then
-        return nil
-    end
-
 
     return {
-        peripheralName =
-            peripheralName,
-
-        peripheralType =
-            peripheral.getType(
-                peripheralName
-            ),
-
-        peripheral =
-            device
+        peripheralName = peripheralName,
+        peripheralType = peripheral.getType(peripheralName),
+        peripheral = device,
+        items = items
     }
 end
 
-
---------------------------------------------------
--- Scan inventory devices
---------------------------------------------------
-
 local function scanInventories()
-
     local inventories = {}
 
-    for _, peripheralName
-        in ipairs(peripheral.getNames()) do
-
-        local info =
-            getInventoryInfo(
-                peripheralName
-            )
-
+    for _, peripheralName in ipairs(peripheral.getNames()) do
+        local info = getInventoryInfo(peripheralName)
         if info then
-
-            table.insert(
-                inventories,
-                info
-            )
-
+            table.insert(inventories, info)
         end
     end
+
+    table.sort(inventories, function(a, b)
+        return a.peripheralName < b.peripheralName
+    end)
 
     return inventories
 end
 
+local function selectInventory(excludedPeripheralName)
+    while true do
+        local inventories = scanInventories()
+
+        clearScreen()
+        print("========================================")
+        print("          Inventory Selection")
+        print("========================================")
+        print()
+
+        local visible = {}
+        for _, inventory in ipairs(inventories) do
+            if inventory.peripheralName ~= excludedPeripheralName then
+                table.insert(visible, inventory)
+            end
+        end
+
+        if #visible == 0 then
+            print("No readable inventory device found.")
+            print("The device must support inventory.list().")
+            pause()
+        else
+            for i, inventory in ipairs(visible) do
+                local slotCount = 0
+                for _ in pairs(inventory.items) do
+                    slotCount = slotCount + 1
+                end
+
+                print("[" .. i .. "] " .. inventory.peripheralName)
+                print("    Type: " .. tostring(inventory.peripheralType))
+                print("    Used slots: " .. tostring(slotCount))
+                print()
+            end
+
+            local choice = tonumber(ask("Select inventory"))
+            if choice and visible[choice] then
+                return visible[choice]
+            end
+
+            print("Invalid selection.")
+            sleep(1)
+        end
+    end
+end
 
 --------------------------------------------------
--- Get inventory items
+-- Item selection from inventory
 --------------------------------------------------
 
-local function getInventoryItems(
-    inventory
-)
+local function buildItemList(inventory)
+    local aggregated = {}
 
-    local ok, result =
-        pcall(function()
+    for _, item in pairs(inventory.items) do
+        if item and item.name then
+            if not aggregated[item.name] then
+                aggregated[item.name] = 0
+            end
 
-            return inventory.list()
-
-        end)
-
-
-    if not ok then
-        return nil
+            aggregated[item.name] = aggregated[item.name] + (item.count or 0)
+        end
     end
 
+    local result = {}
+
+    for name, count in pairs(aggregated) do
+        table.insert(result, {
+            name = name,
+            count = count
+        })
+    end
+
+    table.sort(result, function(a, b)
+        return a.name < b.name
+    end)
 
     return result
 end
 
+local function selectItem(inventory)
+    local items = buildItemList(inventory)
 
---------------------------------------------------
--- Display inventory
---------------------------------------------------
-
-local function showInventory(
-    inventory
-)
-
-    local items =
-        getInventoryItems(
-            inventory.peripheral
-        )
-
-    print()
-    print("----------------------------------------")
-    print("Current inventory")
-    print("----------------------------------------")
-
-    if not items then
-
-        print("Unable to read inventory.")
-
-        return
+    if #items == 0 then
+        print()
+        print("The selected inventory is empty.")
+        print("Please put at least one item into it, then rescan.")
+        pause()
+        return nil
     end
 
-
-    local count = 0
-
-
-    for slot, item
-        in pairs(items) do
-
-        count = count + 1
-
-        print(
-            "Slot "
-            .. tostring(slot)
-            .. " : "
-            .. tostring(item.name)
-            .. " x"
-            .. tostring(item.count)
-        )
-
-        --------------------------------------------------
-        -- Show at most 20 items
-        --------------------------------------------------
-
-        if count >= 20 then
-
-            print("...")
-
-            break
-        end
-    end
-
-
-    if count == 0 then
-
-        print("(Inventory is empty)")
-
-    end
-
-
-    print("----------------------------------------")
-end
-
-
---------------------------------------------------
--- Select inventory
---------------------------------------------------
-
-local function selectInventory()
+    local pageSize = 20
+    local page = 1
+    local totalPages = math.ceil(#items / pageSize)
 
     while true do
-
-        local inventories =
-            scanInventories()
-
         clearScreen()
-
         print("========================================")
-        print("        Inventory Device Selection")
-        print("================================")
+        print("       Requested Item Selection")
+        print("========================================")
+        print()
+        print("Inventory: " .. inventory.peripheralName)
+        print("Items found: " .. tostring(#items))
+        print("Page " .. tostring(page) .. "/" .. tostring(totalPages))
         print()
 
-        if #inventories == 0 then
+        local startIndex = (page - 1) * pageSize + 1
+        local endIndex = math.min(startIndex + pageSize - 1, #items)
 
-            print("No readable inventory device found.")
-            print()
+        for i = startIndex, endIndex do
+            local item = items[i]
+            print(
+                "[" .. (i - startIndex + 1) .. "] "
+                .. item.name
+                .. " x"
+                .. tostring(item.count)
+            )
+        end
 
-            print("The program requires the device to support:")
-            print("    inventory.list()")
-            print()
+        print()
+        print("[n] next page   [p] previous page   [q] cancel")
 
-            pause()
+        local input = string.lower(ask("Select item"))
 
+        if input == "q" then
+            return nil
+        elseif input == "n" and page < totalPages then
+            page = page + 1
+        elseif input == "p" and page > 1 then
+            page = page - 1
         else
-
-            for i, inventory
-                in ipairs(inventories) do
-
-                print(
-                    "[" .. i .. "] "
-                    .. inventory.peripheralName
-                )
-
-                print(
-                    "    Type: "
-                    .. tostring(
-                        inventory.peripheralType
-                    )
-                )
-
-                print()
-
+            local choice = tonumber(input)
+            if choice and choice >= 1 and choice <= (endIndex - startIndex + 1) then
+                return items[startIndex + choice - 1].name
             end
 
-
-            local choice =
-                tonumber(
-                    ask("Please select an inventory")
-                )
-
-
-            if choice
-                and inventories[choice] then
-
-                local selected =
-                    inventories[choice]
-
-
-                showInventory(
-                    selected
-                )
-
-
-                print()
-
-                local confirm =
-                    askYesNo(
-                        "Use this inventory?",
-                        "y"
-                    )
-
-
-                if confirm then
-
-                    return selected
-
-                end
-
-            else
-
-                print()
-                print("Invalid selection.")
-                sleep(1)
-
-            end
+            print("Invalid selection.")
+            sleep(1)
         end
     end
 end
 
-
 --------------------------------------------------
--- Write config.lua
---------------------------------------------------
-
-local function writeConfig(
-    config
-)
-
-    local file =
-        fs.open(
-            "config.lua",
-            "w"
-        )
-
-    if not file then
-
-        error(
-            "Unable to create config.lua"
-        )
-    end
-
-
-    file.writeLine(
-        "return {"
-    )
-
-
-    file.writeLine(
-        "    stationName = "
-        .. string.format(
-            "%q",
-            config.stationName
-        )
-        .. ","
-    )
-
-
-    file.writeLine(
-        "    disabledName = "
-        .. string.format(
-            "%q",
-            config.disabledName
-        )
-        .. ","
-    )
-
-
-    file.writeLine(
-        "    inventoryPeripheral = "
-        .. string.format(
-            "%q",
-            config.inventoryPeripheral
-        )
-        .. ","
-    )
-
-
-    file.writeLine(
-        "    inventoryType = "
-        .. string.format(
-            "%q",
-            config.inventoryType
-        )
-        .. ","
-    )
-
-
-    file.writeLine(
-        "    item = "
-        .. string.format(
-            "%q",
-            config.item
-        )
-        .. ","
-    )
-
-
-    file.writeLine(
-        "    capacity = "
-        .. tostring(
-            config.capacity
-        )
-        .. ","
-    )
-
-
-    file.writeLine(
-        "    enablePercent = "
-        .. tostring(
-            config.enablePercent
-        )
-        .. ","
-    )
-
-
-    file.writeLine(
-        "    disablePercent = "
-        .. tostring(
-            config.disablePercent
-        )
-        .. ","
-    )
-
-
-    file.writeLine(
-        "    checkInterval = 5"
-    )
-
-
-    file.writeLine(
-        "}"
-    )
-
-
-    file.close()
-end
-
-
---------------------------------------------------
--- Install station.lua
+-- Station capacity / thresholds
 --------------------------------------------------
 
-local function installStationProgram()
+local function configureStationSettings(existing)
+    local defaultCapacity = existing and existing.capacity or 4096
+    local defaultEnable = existing and existing.enablePercent or 20
+    local defaultDisable = existing and existing.disablePercent or 80
 
-    if not fs.exists(
-        "/disk/station.lua"
-    ) then
-
-        error(
-            "station.lua is missing from the disk"
-        )
-    end
-
-
-    --------------------------------------------------
-    -- Remove previous program
-    --------------------------------------------------
-
-    if fs.exists(
-        "/station.lua"
-    ) then
-
-        fs.delete(
-            "/station.lua"
-        )
-    end
-
-
-    --------------------------------------------------
-    -- Copy from disk
-    --------------------------------------------------
-
-    fs.copy(
-        "/disk/station.lua",
-        "/station.lua"
-    )
-
-end
-
-
---------------------------------------------------
--- Create startup.lua
---------------------------------------------------
-
-local function createStartup()
-
-    local file =
-        fs.open(
-            "/startup.lua",
-            "w"
-        )
-
-    if not file then
-
-        error(
-            "Unable to create startup.lua"
-        )
-    end
-
-
-    file.writeLine(
-        'shell.run("station.lua")'
-    )
-
-
-    file.close()
-end
-
-
---------------------------------------------------
--- Main program
---------------------------------------------------
-
-clearScreen()
-
-print("========================================")
-print(" Create Station Controller")
-print(" Installation Program")
-print("========================================")
-print()
-
-print("This program will configure a train unloading request station.")
-print()
-
-pause()
-
-
---------------------------------------------------
--- STEP 1
---------------------------------------------------
-
-clearScreen()
-
-print("========================================")
-print(" Step 1 / 5")
-print(" Select the physical Train Station")
-print("========================================")
-print()
-
-local selectedStation =
-    selectStation()
-
-
-if not selectedStation then
-
-    print("No station selected.")
-
-    return
-end
-
-
---------------------------------------------------
--- STEP 2
---------------------------------------------------
-
-local stationConfig =
-    configureStationName(
-        selectedStation
-    )
-
-
---------------------------------------------------
--- STEP 3
---------------------------------------------------
-
-clearScreen()
-
-print("========================================")
-print(" Step 3 / 5")
-print(" Select inventory device")
-print("========================================")
-print()
-
-local selectedInventory =
-    selectInventory()
-
-
-if not selectedInventory then
-
-    print("No inventory selected.")
-
-    return
-end
-
-
---------------------------------------------------
--- STEP 4
---------------------------------------------------
-
-clearScreen()
-
-print("========================================")
-print(" Step 4 / 5")
-print(" Item and capacity")
-print("========================================")
-print()
-
-
-local item =
-    ask(
-        "Requested item ID",
-        "minecraft:iron_ingot"
-    )
-
-
-while item == "" do
-
-    print(
-        "Item ID cannot be empty."
-    )
-
-    item =
-        ask(
-            "Requested item ID"
-        )
-end
-
-
-local capacity =
-    askNumber(
-        "Total inventory capacity",
-        4096,
+    local capacity = askNumber(
+        "Inventory capacity (item count)",
+        defaultCapacity,
         1
     )
 
-
---------------------------------------------------
--- STEP 5
---------------------------------------------------
-
-clearScreen()
-
-print("========================================")
-print(" Step 5 / 5")
-print(" Threshold settings")
-print("========================================")
-print()
-
-
-local enablePercent =
-    askNumber(
-        "Entry allowed threshold (%)",
-        20,
+    local enablePercent = askNumber(
+        "Allow entry below (%)",
+        defaultEnable,
         0,
         100
     )
 
-
-local disablePercent =
-    askNumber(
-        "Entry blocked threshold (%)",
-        80,
+    local disablePercent = askNumber(
+        "Block entry at/above (%)",
+        defaultDisable,
         0,
         100
     )
 
+    if enablePercent >= disablePercent then
+        print("Enable threshold must be lower than disable threshold.")
+        return nil
+    end
 
---------------------------------------------------
--- Check thresholds
---------------------------------------------------
-
-if enablePercent >= disablePercent then
-
-    print()
-    print("Error:")
-    print("The allow-entry threshold must be lower than the deny-entry threshold.")
-    print()
-
-    print(
-        "Example: 20% / 80%"
-    )
-
-    pause()
-
-    return
+    return {
+        capacity = capacity,
+        enablePercent = enablePercent,
+        disablePercent = disablePercent
+    }
 end
 
-
 --------------------------------------------------
--- Final configuration
---------------------------------------------------
-
-local config = {
-
-    stationName =
-        stationConfig.stationName,
-
-    disabledName =
-        stationConfig.disabledName,
-
-    inventoryPeripheral =
-        selectedInventory.peripheralName,
-
-    inventoryType =
-        selectedInventory.peripheralType,
-
-    item =
-        item,
-
-    capacity =
-        capacity,
-
-    enablePercent =
-        enablePercent,
-
-    disablePercent =
-        disablePercent
-}
-
-
---------------------------------------------------
--- Show final configuration
+-- Bind one station
 --------------------------------------------------
 
-clearScreen()
+local function bindStation(config, existingIndex)
+    local existing = existingIndex and config.stations[existingIndex] or nil
 
-print("========================================")
-print("          Installation Confirmation")
-print("========================================")
-print()
+    local selectedStation = selectStation(nil)
+    local stationName, disabledName = configureStationName(config, selectedStation, existingIndex)
 
-print(
-    "Station name:"
-)
+    -- Do not allow the same physical station to be assigned twice.
+    for i, station in ipairs(config.stations) do
+        if i ~= existingIndex and station.physicalStation == selectedStation.peripheralName then
+            print("That physical station is already bound to another configuration entry.")
+            pause()
+            return nil
+        end
+    end
 
-print(
-    "  "
-    .. config.stationName
-)
+    local oldInventory = existing and existing.inventoryPeripheral or nil
+    local selectedInventory = selectInventory(nil)
 
-print()
+    if not selectedInventory then
+        return nil
+    end
 
-print(
-    "Disabled name:"
-)
+    -- Do not allow the same inventory to be assigned to two stations.
+    for i, station in ipairs(config.stations) do
+        if i ~= existingIndex and station.inventoryPeripheral == selectedInventory.peripheralName then
+            print("That inventory is already bound to another station.")
+            pause()
+            return nil
+        end
+    end
 
-print(
-    "  "
-    .. config.disabledName
-)
+    local selectedItem = selectItem(selectedInventory)
+    if not selectedItem then
+        return nil
+    end
 
-print()
+    local defaults = existing
+        and {
+            capacity = existing.capacity,
+            enablePercent = existing.enablePercent,
+            disablePercent = existing.disablePercent
+        }
+        or nil
 
-print(
-    "Inventory device:"
-)
+    local settings = configureStationSettings(defaults)
+    if not settings then
+        pause()
+        return nil
+    end
 
-print(
-    "  "
-    .. config.inventoryPeripheral
-)
+    local entry = {
+        id = existing and existing.id or ("station_" .. tostring(#config.stations + 1)),
+        physicalStation = selectedStation.peripheralName,
+        stationName = stationName,
+        disabledName = disabledName,
+        inventoryPeripheral = selectedInventory.peripheralName,
+        inventoryType = selectedInventory.peripheralType,
+        item = selectedItem,
+        capacity = settings.capacity,
+        enablePercent = settings.enablePercent,
+        disablePercent = settings.disablePercent
+    }
 
-print()
-
-print(
-    "Inventory type:"
-)
-
-print(
-    "  "
-    .. config.inventoryType
-)
-
-print()
-
-print(
-    "Requested item:"
-)
-
-print(
-    "  "
-    .. config.item
-)
-
-print()
-
-print(
-    "Inventory capacity:"
-)
-
-print(
-    "  "
-    .. tostring(
-        config.capacity
-    )
-)
-
-print()
-
-print(
-    "Allow entry:"
-)
-
-print(
-    "  < "
-    .. tostring(
-        config.enablePercent
-    )
-    .. "%"
-)
-
-print()
-
-print(
-    "Block entry:"
-)
-
-print(
-    "  >= "
-    .. tostring(
-        config.disablePercent
-    )
-    .. "%"
-)
-
-print()
-
-print("========================================")
-print()
-
-
-local confirm =
-    askYesNo(
-        "Confirm installation?",
-        "y"
-    )
-
-
-if not confirm then
-
-    print()
-    print("Installation cancelled.")
-
-    return
+    return entry
 end
 
-
 --------------------------------------------------
--- Start installation
---------------------------------------------------
-
-clearScreen()
-
-print("========================================")
-print("          Installing")
-print("========================================")
-print()
-
-
---------------------------------------------------
--- 1. Set station name
+-- Install station program from disk
 --------------------------------------------------
 
-print(
-    "[1/4] Setting station name..."
-)
+local function installStationProgram()
+    if not fs.exists("/disk/station.lua") then
+        error("station.lua is missing from the floppy disk.")
+    end
 
-
-local ok, err =
-    pcall(function()
-
-        selectedStation.peripheral
-            .setStationName(
-                config.stationName
-            )
-
-    end)
-
-
-if not ok then
-
-    print()
-    print(
-        "Failed to set station name:"
-    )
-
-    print(
-        tostring(err)
-    )
-
-    return
+    fs.delete(STATION_PROGRAM_PATH)
+    fs.copy("/disk/station.lua", STATION_PROGRAM_PATH)
 end
 
+local function installInstallerProgram()
+    if not fs.exists("/disk/install.lua") then
+        return
+    end
 
-print("      OK")
-
+    fs.delete(INSTALL_PATH)
+    fs.copy("/disk/install.lua", INSTALL_PATH)
+end
 
 --------------------------------------------------
--- 2. Write config.lua
+-- Startup menu file
 --------------------------------------------------
 
-print(
-    "[2/4] Creating config.lua..."
-)
+local function createStartup()
+    local file = fs.open("/startup.lua", "w")
+    if not file then
+        error("Unable to create startup.lua")
+    end
 
+    file.writeLine('shell.run("install.lua")')
+    file.close()
+end
 
-local okConfig, errConfig =
-    pcall(function()
+--------------------------------------------------
+-- Show configuration
+--------------------------------------------------
 
-        writeConfig(
-            config
+local function showConfig(config)
+    clearScreen()
+    print("========================================")
+    print("       Factory Request Controller")
+    print("========================================")
+    print()
+    print("Stations: " .. tostring(#config.stations))
+    print()
+
+    for i, station in ipairs(config.stations) do
+        print(
+            "[" .. i .. "] "
+            .. station.stationName
         )
-
-    end)
-
-
-if not okConfig then
-
-    print()
-    print(
-        "Failed to create config.lua:"
-    )
-
-    print(
-        tostring(errConfig)
-    )
-
-    return
+        print(
+            "    Item: "
+            .. station.item
+        )
+        print(
+            "    Inventory: "
+            .. station.inventoryPeripheral
+        )
+        print(
+            "    Threshold: <"
+            .. tostring(station.enablePercent)
+            .. "% / >="
+            .. tostring(station.disablePercent)
+            .. "%"
+        )
+        print()
+    end
 end
 
-
-print("      OK")
-
-
 --------------------------------------------------
--- 3. Install station.lua
+-- Install all stations
 --------------------------------------------------
 
-print(
-    "[3/4] Installing station.lua..."
-)
-
-
-local okStation, errStation =
-    pcall(function()
-
-        installStationProgram()
-
-    end)
-
-
-if not okStation then
-
+local function installAll()
+    clearScreen()
+    print("========================================")
+    print("             INSTALL MODE")
+    print("========================================")
     print()
-    print(
-        "Failed to install station.lua:"
+
+    local count = askNumber(
+        "How many request stations should be bound",
+        1,
+        1
     )
 
-    print(
-        tostring(errStation)
-    )
+    local config = {
+        version = 2,
+        checkInterval = 5,
+        stations = {}
+    }
 
-    return
+    for i = 1, count do
+        clearScreen()
+        print("========================================")
+        print("       Binding Station " .. i .. "/" .. count)
+        print("========================================")
+        print()
+
+        local entry = bindStation(config, nil)
+
+        if not entry then
+            print("Binding cancelled or failed.")
+            pause()
+            return
+        end
+
+        table.insert(config.stations, entry)
+
+        -- Set the final name immediately.
+        local physical = peripheral.wrap(entry.physicalStation)
+        if physical then
+            local ok, err = pcall(function()
+                physical.setStationName(entry.stationName)
+            end)
+
+            if not ok then
+                print("Failed to set station name: " .. tostring(err))
+                pause()
+                return
+            end
+        end
+
+        print()
+        print("Station " .. i .. " configured successfully.")
+        print("Name: " .. entry.stationName)
+        print("Item: " .. entry.item)
+        pause()
+    end
+
+    if not askYesNo("Write this configuration to config.lua?", "y") then
+        print("Installation cancelled.")
+        return
+    end
+
+    writeConfig(config)
+    installStationProgram()
+    installInstallerProgram()
+    createStartup()
+
+    print("Installation completed.")
+    print("Stations configured: " .. tostring(#config.stations))
+    pause()
 end
 
-
-print("      OK")
-
-
 --------------------------------------------------
--- 4. Create startup.lua
+-- Update one station
 --------------------------------------------------
 
-print(
-    "[4/4] Creating startup.lua..."
-)
+local function updateOne()
+    local config = loadConfig()
 
+    if not config or #config.stations == 0 then
+        print("No existing configuration. Use Install first.")
+        pause()
+        return
+    end
 
-local okStartup, errStartup =
-    pcall(function()
+    clearScreen()
+    print("========================================")
+    print("              UPDATE MODE")
+    print("========================================")
+    print()
 
-        createStartup()
+    for i, station in ipairs(config.stations) do
+        print("[" .. i .. "] " .. station.stationName)
+        print("    Item: " .. station.item)
+        print("    Inventory: " .. station.inventoryPeripheral)
+        print()
+    end
 
-    end)
+    local index = tonumber(ask("Select station to update"))
 
+    if not index or not config.stations[index] then
+        print("Invalid selection.")
+        pause()
+        return
+    end
 
-if not okStartup then
+    local old = config.stations[index]
+    local entry = bindStation(config, index)
+
+    if not entry then
+        print("Update cancelled or failed.")
+        pause()
+        return
+    end
+
+    config.stations[index] = entry
+
+    if not askYesNo("Write this update to config.lua?", "y") then
+        print("Update cancelled.")
+        pause()
+        return
+    end
+
+    writeConfig(config)
+    installStationProgram()
+    installInstallerProgram()
+    createStartup()
 
     print()
-    print(
-        "Failed to create startup.lua:"
-    )
-
-    print(
-        tostring(errStartup)
-    )
-
-    return
+    print("Station updated successfully.")
+    print("Old station: " .. tostring(old.stationName))
+    print("New station: " .. tostring(entry.stationName))
+    pause()
 end
 
-
-print("      OK")
-
-
 --------------------------------------------------
--- Installation complete
+-- Run controller
 --------------------------------------------------
 
-print()
-print("========================================")
-print("          Installation Complete")
-print("========================================")
-print()
+local function runController()
+    if not fs.exists(STATION_PROGRAM_PATH) then
+        print("station.lua is not installed.")
+        print("Use Install first.")
+        pause()
+        return
+    end
 
-print(
-    "Station: "
-    .. config.stationName
-)
-
-print(
-    "Inventory: "
-    .. config.inventoryPeripheral
-)
-
-print(
-    "Item: "
-    .. config.item
-)
-
-print()
-
-print(
-    "Below "
-    .. tostring(config.enablePercent)
-    .. "%: allow entry"
-)
-
-print(
-    "At "
-    .. tostring(config.disablePercent)
-    .. "%: block entry"
-)
-
-print()
-
-print("Generated:")
-print("  config.lua")
-print("  station.lua")
-print("  startup.lua")
-
-print()
-
+    shell.run("station.lua")
+end
 
 --------------------------------------------------
--- Restart?
+-- Main startup menu
 --------------------------------------------------
 
-local reboot =
-    askYesNo(
-        "Restart the computer now?",
-        "y"
-    )
+while true do
+    local config = loadConfig()
 
+    clearScreen()
+    print("========================================")
+    print("       Factory Request Controller")
+    print("========================================")
+    print()
 
-if reboot then
-
-    os.reboot()
-
-else
+    if config then
+        print("Configured stations: " .. tostring(#config.stations))
+    else
+        print("No configuration found.")
+    end
 
     print()
-    print(
-        "Installation complete. Enter reboot to start the control program."
-    )
+    print("[1] Run controller")
+    print("[2] Install / replace all stations")
+    print("[3] Update one station")
+    print("[4] Exit")
+    print()
 
+    local choice = ask("Select mode")
+
+    if choice == "1" then
+        runController()
+    elseif choice == "2" then
+        installAll()
+    elseif choice == "3" then
+        updateOne()
+    elseif choice == "4" then
+        break
+    else
+        print("Invalid selection.")
+        sleep(1)
+    end
 end

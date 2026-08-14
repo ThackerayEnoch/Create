@@ -1,333 +1,249 @@
 --[[
-    Create Train Station Unloading Controller
+    Create Factory Train Station Controller
 
-    Features:
+    One Computer controls multiple request stations.
+    Each station is independently bound to:
+      - Create Train Station
+      - Inventory peripheral
+      - Requested item
+      - Capacity / thresholds
 
-    1. Find the Create Station by station name from config.lua
-    2. Find the inventory using the peripheral name selected during installation
-    3. Count the specified item quantity
-    4. If inventory < enablePercent
-       -> restore the normal station name
-       -> allow train pathfinding
-
-    5. If inventory >= disablePercent
-       -> rename to disabledName
-       -> exclude it from wildcard requests
-
-    6. 20% ~ 80%
-       -> keep the current status and avoid frequent renaming
-
-    7. The computer automatically resumes operation after reboot
+    Station names are stable logical identifiers.
+    Peripheral names are only used to locate the bound inventory/physical station
+    within the current wired factory network.
 ]]
 
+local CONFIG_PATH = "/config.lua"
 
 --------------------------------------------------
--- Load config
---------------------------------------------------
-
-local config = dofile("/config.lua")
-
-
---------------------------------------------------
--- Log function
+-- Utilities
 --------------------------------------------------
 
 local function log(message)
-
-    print(
-        os.date("[%H:%M:%S] ")
-        .. tostring(message)
-    )
-
+    print(os.date("[%H:%M:%S] ") .. tostring(message))
 end
 
+local function formatNumber(value)
+    local number = tonumber(value) or 0
+    local formatted = tostring(math.floor(number))
+    local output = ""
+    local index = 0
+
+    for i = #formatted, 1, -1 do
+        output = formatted:sub(i, i) .. output
+        index = index + 1
+        if index % 3 == 0 and i > 1 then
+            output = "," .. output
+        end
+    end
+
+    return output
+end
+
+local function loadConfig()
+    local ok, config = pcall(dofile, CONFIG_PATH)
+    if not ok or type(config) ~= "table" then
+        error("Invalid config.lua: " .. tostring(config))
+    end
+
+    config.stations = config.stations or {}
+    config.checkInterval = config.checkInterval or 5
+    return config
+end
 
 --------------------------------------------------
--- Find Train Station
---
--- Do not use peripheral names such as Create_Station_4
--- Instead, find it by the formal station name
+-- Peripheral lookup
 --------------------------------------------------
 
-local function findStation()
+local function findStation(entry)
+    -- Fast path: current peripheral name still exists and has the right type.
+    if entry.physicalStation
+        and peripheral.isPresent(entry.physicalStation)
+        and peripheral.getType(entry.physicalStation) == "Create_Station" then
 
-    for _, peripheralName
-        in ipairs(peripheral.getNames()) do
+        local station = peripheral.wrap(entry.physicalStation)
+        if station then
+            local ok, name = pcall(function()
+                return station.getStationName()
+            end)
 
-        --------------------------------------------------
-        -- Check whether it is a Create Station
-        --------------------------------------------------
+            if ok and (name == entry.stationName or name == entry.disabledName) then
+                return station
+            end
+        end
+    end
 
-        if peripheral.getType(peripheralName)
-            == "Create_Station" then
-
-            local station =
-                peripheral.wrap(
-                    peripheralName
-                )
-
+    -- Recovery path: peripheral number/name may have changed after reconnect/reboot.
+    for _, peripheralName in ipairs(peripheral.getNames()) do
+        if peripheral.getType(peripheralName) == "Create_Station" then
+            local station = peripheral.wrap(peripheralName)
             if station then
+                local ok, name = pcall(function()
+                    return station.getStationName()
+                end)
 
-                --------------------------------------------------
-                -- Get the current station name
-                --------------------------------------------------
-
-                local ok, stationName =
-                    pcall(function()
-
-                        return station.getStationName()
-
-                    end)
-
-
-                if ok
-                    and stationName then
-
-                    --------------------------------------------------
-                    -- Normal name
-                    --------------------------------------------------
-
-                    if stationName
-                        == config.stationName then
-
-                        return station
-
-                    end
-
-
-                    --------------------------------------------------
-                    -- Disabled state
-                    --
-                    -- Even if the current name is xxx_DISABLED,
-                    -- it must still be found
-                    --------------------------------------------------
-
-                    if stationName
-                        == config.disabledName then
-
-                        return station
-
-                    end
-
+                if ok and (name == entry.stationName or name == entry.disabledName) then
+                    entry.physicalStation = peripheralName
+                    return station
                 end
             end
         end
     end
 
-
     return nil
 end
 
-
---------------------------------------------------
--- Find inventory
---
--- In this version, inventory is found by the peripheral name
--- saved by install.lua
---------------------------------------------------
-
-local function findInventory()
-
-    local name =
-        config.inventoryPeripheral
-
-
-    if not name then
-
+local function findInventory(entry)
+    if not entry.inventoryPeripheral then
         return nil
-
     end
 
-
-    --------------------------------------------------
-    -- Check whether the device still exists
-    --------------------------------------------------
-
-    if not peripheral.isPresent(name) then
-
+    if not peripheral.isPresent(entry.inventoryPeripheral) then
         return nil
-
     end
 
+    local currentType = peripheral.getType(entry.inventoryPeripheral)
 
-    --------------------------------------------------
-    -- Check device type
-    --------------------------------------------------
-
-    local currentType =
-        peripheral.getType(name)
-
-
-    if config.inventoryType
-        and currentType
-        ~= config.inventoryType then
-
+    if entry.inventoryType and currentType ~= entry.inventoryType then
         return nil
-
     end
 
-
-    --------------------------------------------------
-    -- Get peripheral
-    --------------------------------------------------
-
-    local inventory =
-        peripheral.wrap(name)
-
-
+    local inventory = peripheral.wrap(entry.inventoryPeripheral)
     if not inventory then
-
         return nil
-
     end
 
-
-    --------------------------------------------------
-    -- Test list()
-    --------------------------------------------------
-
-    local ok =
-        pcall(function()
-
-            inventory.list()
-
-        end)
-
+    local ok = pcall(function()
+        inventory.list()
+    end)
 
     if not ok then
-
         return nil
-
     end
-
 
     return inventory
 end
 
-
 --------------------------------------------------
--- Read the specified item quantity
+-- Inventory
 --------------------------------------------------
 
-local function getItemCount(
-    inventory
-)
+local function getItemCount(inventory, itemName)
+    local ok, items = pcall(function()
+        return inventory.list()
+    end)
 
-    local ok, items =
-        pcall(function()
-
-            return inventory.list()
-
-        end)
-
-
-    if not ok then
-
+    if not ok or type(items) ~= "table" then
         return nil
     end
-
-
-    if type(items) ~= "table" then
-
-        return nil
-    end
-
 
     local total = 0
 
-
     for _, item in pairs(items) do
-
-        if item
-            and item.name
-            == config.item then
-
-            total =
-                total
-                + (item.count or 0)
-
+        if item and item.name == itemName then
+            total = total + (item.count or 0)
         end
     end
-
 
     return total
 end
 
-
---------------------------------------------------
--- Get inventory percentage
---------------------------------------------------
-
-local function getPercentage(
-    count
-)
-
-    return
-        count
-        / config.capacity
-        * 100
-
-end
-
-
-local function formatNumber(value)
-
-    local number = tonumber(value) or 0
-
-    if number >= 1000 then
-
-        local formatted = tostring(math.floor(number))
-        local output = ""
-        local index = 0
-
-        for i = #formatted, 1, -1 do
-
-            output = formatted:sub(i, i) .. output
-            index = index + 1
-
-            if index % 3 == 0 and i > 1 then
-
-                output = "," .. output
-            end
-        end
-
-        return output
+local function getPercentage(count, capacity)
+    if not capacity or capacity <= 0 then
+        return 0
     end
 
-    return tostring(math.floor(number))
+    return count / capacity * 100
 end
 
+--------------------------------------------------
+-- Station status
+--------------------------------------------------
+
+local function getStationName(station)
+    local ok, name = pcall(function()
+        return station.getStationName()
+    end)
+
+    if not ok then
+        return nil
+    end
+
+    return name
+end
+
+local function setStationName(station, name)
+    local current = getStationName(station)
+    if not current then
+        return false
+    end
+
+    if current == name then
+        return true
+    end
+
+    local ok, err = pcall(function()
+        station.setStationName(name)
+    end)
+
+    if not ok then
+        log("Failed to rename station: " .. tostring(err))
+        return false
+    end
+
+    return true
+end
+
+local function updateStationState(station, entry, percent)
+    local current = getStationName(station)
+    if not current then
+        return "error"
+    end
+
+    if percent < entry.enablePercent then
+        if current ~= entry.stationName then
+            setStationName(station, entry.stationName)
+        end
+        return "enabled"
+    end
+
+    if percent >= entry.disablePercent then
+        if current ~= entry.disabledName then
+            setStationName(station, entry.disabledName)
+        end
+        return "disabled"
+    end
+
+    if current == entry.disabledName then
+        return "disabled"
+    end
+
+    return "enabled"
+end
+
+--------------------------------------------------
+-- Monitor drawing API
+--------------------------------------------------
 
 local function getMonitor()
-
-    if config.monitorSide then
-
-        local side = tostring(config.monitorSide)
-
-        if peripheral.isPresent(side)
-            and peripheral.getType(side) == "monitor" then
-
-            return peripheral.wrap(side)
-        end
+    if peripheral.getType("monitor") == "monitor" then
+        return peripheral.wrap("monitor")
     end
 
-    for _, peripheralName in ipairs(peripheral.getNames()) do
+    if peripheral.isPresent("monitor_0") and peripheral.getType("monitor_0") == "monitor" then
+        return peripheral.wrap("monitor_0")
+    end
 
-        if peripheral.getType(peripheralName) == "monitor" then
-
-            return peripheral.wrap(peripheralName)
+    for _, name in ipairs(peripheral.getNames()) do
+        if peripheral.getType(name) == "monitor" then
+            return peripheral.wrap(name)
         end
     end
 
     return nil
 end
 
-
 local function setMonitorColours(monitor, textColour, backgroundColour)
-    if not monitor then
-        return
-    end
-
     if monitor.setBackgroundColour then
         monitor.setBackgroundColour(backgroundColour or colors.black)
         monitor.setTextColour(textColour or colors.white)
@@ -337,74 +253,12 @@ local function setMonitorColours(monitor, textColour, backgroundColour)
     end
 end
 
-
-local function getMonitor()
-    if config.monitorSide then
-        local side = tostring(config.monitorSide)
-
-        if peripheral.isPresent(side)
-            and peripheral.getType(side) == "monitor" then
-            return peripheral.wrap(side)
-        end
-    end
-
-    for _, peripheralName in ipairs(peripheral.getNames()) do
-        if peripheral.getType(peripheralName) == "monitor" then
-            return peripheral.wrap(peripheralName)
-        end
-    end
-
-    return nil
+local function drawHorizontalLine(monitor, y, colour)
+    local width = select(1, monitor.getSize())
+    setMonitorColours(monitor, colour or colors.blue, colors.black)
+    monitor.setCursorPos(1, y)
+    monitor.write(string.rep("=", width))
 end
-
-
-local function prettyItemName(rawName)
-    local item = tostring(rawName or "item")
-    item = item:gsub("^.-:", "")
-    item = item:gsub("_", " ")
-    item = item:gsub("%s+", " ")
-    item = item:gsub("^%s*(.-)%s*$", "%1")
-
-    local output = ""
-
-    for part in item:gmatch("%S+") do
-        if output ~= "" then
-            output = output .. " "
-        end
-        output = output .. string.upper(part)
-    end
-
-    if output == "" then
-        return "ITEM REQUEST"
-    end
-
-    return output
-end
-
-
-local function prettyStationName(rawName)
-    local name = tostring(rawName or "Station")
-    name = name:gsub("^.-_", "")
-    name = name:gsub("_", " ")
-    name = name:gsub("%s+", " ")
-    name = name:gsub("^%s*(.-)%s*$", "%1")
-
-    local output = ""
-
-    for part in name:gmatch("%S+") do
-        if output ~= "" then
-            output = output .. " "
-        end
-        output = output .. string.upper(part)
-    end
-
-    if output == "" then
-        return "FACTORY REQUEST"
-    end
-
-    return output
-end
-
 
 local function centerText(monitor, y, text, colour)
     local width = select(1, monitor.getSize())
@@ -416,43 +270,15 @@ local function centerText(monitor, y, text, colour)
 
     local x = math.max(1, math.floor((width - #value) / 2) + 1)
 
-    setMonitorColours(
-        monitor,
-        colour or colors.white,
-        colors.black
-    )
-
+    setMonitorColours(monitor, colour or colors.white, colors.black)
     monitor.setCursorPos(x, y)
     monitor.write(value)
 end
 
-
-local function drawHorizontalLine(monitor, y, colour)
-    local width = select(1, monitor.getSize())
-
-    setMonitorColours(
-        monitor,
-        colour or colors.blue,
-        colors.black
-    )
-
-    monitor.setCursorPos(1, y)
-    monitor.write(string.rep("=", width))
-end
-
-
 local function drawProgressBar(monitor, x, y, width, percent)
-    local clamped = tonumber(percent) or 0
-
-    if clamped < 0 then
-        clamped = 0
-    elseif clamped > 100 then
-        clamped = 100
-    end
-
+    local clamped = math.max(0, math.min(100, tonumber(percent) or 0))
     local filled = math.floor(width * clamped / 100)
 
-    -- Background bar
     paintutils.drawFilledBox(
         x,
         y,
@@ -461,7 +287,6 @@ local function drawProgressBar(monitor, x, y, width, percent)
         colors.gray
     )
 
-    -- Filled bar
     if filled > 0 then
         local fillColour = colors.lime
 
@@ -479,776 +304,188 @@ local function drawProgressBar(monitor, x, y, width, percent)
             fillColour
         )
     end
-
-    -- Percentage
-    local percentText =
-        string.format("%.1f%%", clamped)
-
-    setMonitorColours(
-        monitor,
-        colors.white,
-        colors.black
-    )
-
-    monitor.setCursorPos(
-        x + width + 2,
-        y
-    )
-
-    monitor.write(percentText)
 end
 
-
-local function drawStatusBox(
-    monitor,
-    x,
-    y,
-    width,
-    height,
-    state
-)
+local function drawStatusBox(monitor, x, y, width, state)
     local borderColour = colors.lime
     local statusColour = colors.lime
-    local statusText = "REQUEST ENABLED"
+    local text = "REQUEST ENABLED"
 
     if state == "disabled" then
         borderColour = colors.red
         statusColour = colors.red
-        statusText = "REQUEST DISABLED"
-    elseif state == "hold" then
-        borderColour = colors.yellow
-        statusColour = colors.yellow
-        statusText = "REQUEST HOLD"
+        text = "REQUEST DISABLED"
+    elseif state == "error" then
+        borderColour = colors.orange
+        statusColour = colors.orange
+        text = "ERROR"
     end
 
-    -- Outer box
     paintutils.drawBox(
         x,
         y,
         x + width - 1,
-        y + height - 1,
+        y + 2,
         borderColour
     )
 
-    -- Status marker
-    paintutils.drawFilledBox(
-        x + 2,
-        y + 2,
-        x + 3,
-        y + height - 3,
-        statusColour
-    )
-
-    -- Status text
-    local statusX =
-        x + 6
-
-    setMonitorColours(
-        monitor,
-        statusColour,
-        colors.black
-    )
-
-    monitor.setCursorPos(
-        statusX,
-        y + math.floor(height / 2)
-    )
-
-    monitor.write(statusText)
+    setMonitorColours(monitor, statusColour, colors.black)
+    monitor.setCursorPos(x + 3, y + 1)
+    monitor.write(text)
 end
 
+local function shortName(name, width)
+    local value = tostring(name or "")
+    if #value <= width then
+        return value
+    end
+    if width <= 3 then
+        return value:sub(1, width)
+    end
+    return value:sub(1, width - 3) .. "..."
+end
 
-local function drawMonitorStatus(
-    monitor,
-    count,
-    total,
-    percent,
-    state
-)
+local function drawDashboard(monitor, rows)
     if not monitor then
         return
     end
 
-    -- Use the drawing API rather than Unicode box-drawing characters.
-    local width, height = monitor.getSize()
-
     monitor.setTextScale(0.5)
     monitor.clear()
+    setMonitorColours(monitor, colors.white, colors.black)
 
-    setMonitorColours(
-        monitor,
-        colors.white,
-        colors.black
-    )
+    local width, height = monitor.getSize()
 
-    -- The compact layout is intended for a monitor of at least 32x16.
-    if width < 32 or height < 16 then
-        centerText(
-            monitor,
-            1,
-            "FACTORY REQUEST",
-            colors.white
-        )
+    centerText(monitor, 1, "FACTORY REQUEST CONTROLLER", colors.white)
+    centerText(monitor, 2, "MULTI-STATION STATUS", colors.cyan)
+    drawHorizontalLine(monitor, 4, colors.blue)
 
-        centerText(
-            monitor,
-            2,
-            prettyItemName(config.item),
-            colors.cyan
-        )
+    local usableHeight = height - 6
+    local rowHeight = 3
+    local maxRows = math.max(1, math.floor(usableHeight / rowHeight))
+    local shown = math.min(#rows, maxRows)
+    local nameWidth = math.max(10, math.floor(width * 0.36))
+    local itemWidth = math.max(8, math.floor(width * 0.25))
+    local barWidth = math.max(8, width - nameWidth - itemWidth - 14)
 
-        monitor.setCursorPos(2, 4)
-        monitor.write(
-            formatNumber(count)
-            .. " / "
-            .. formatNumber(total)
-        )
+    local y = 6
+
+    for i = 1, shown do
+        local row = rows[i]
+        local stateColour = colors.lime
+
+        if row.state == "disabled" then
+            stateColour = colors.red
+        elseif row.state == "error" then
+            stateColour = colors.orange
+        end
+
+        setMonitorColours(monitor, colors.white, colors.black)
+        monitor.setCursorPos(1, y)
+        monitor.write(shortName(row.stationName, nameWidth))
+
+        monitor.setCursorPos(nameWidth + 2, y)
+        monitor.write(shortName(row.item, itemWidth))
 
         drawProgressBar(
             monitor,
-            2,
-            6,
-            math.max(12, width - 12),
-            percent
+            nameWidth + itemWidth + 4,
+            y,
+            barWidth,
+            row.percent
         )
 
-        local status =
-            state == "enabled"
-            and "ONLINE"
-            or state == "disabled"
-            and "OFFLINE"
-            or "HOLD"
+        setMonitorColours(monitor, stateColour, colors.black)
+        monitor.setCursorPos(nameWidth + 2, y + 1)
+        monitor.write(string.format("%6.1f%%", row.percent))
 
-        centerText(
-            monitor,
-            9,
-            status,
-            state == "enabled"
-                and colors.lime
-                or state == "disabled"
-                and colors.red
-                or colors.yellow
-        )
+        monitor.setCursorPos(nameWidth + itemWidth + 4, y + 1)
+        monitor.write(row.state == "enabled" and "ONLINE"
+            or row.state == "disabled" and "OFFLINE"
+            or "ERROR")
 
-        centerText(
-            monitor,
-            11,
-            "< "
-            .. tostring(config.enablePercent)
-            .. "% ENABLE",
-            colors.lime
-        )
-
-        centerText(
-            monitor,
-            12,
-            ">= "
-            .. tostring(config.disablePercent)
-            .. "% DISABLE",
-            colors.red
-        )
-
-        return
+        y = y + rowHeight
     end
 
-    -- Main title
-    centerText(
-        monitor,
-        2,
-        prettyItemName(config.item),
-        colors.white
-    )
+    drawHorizontalLine(monitor, height - 2, colors.blue)
 
-    centerText(
-        monitor,
-        3,
-        prettyStationName(config.stationName),
-        colors.yellow
-    )
+    setMonitorColours(monitor, colors.lime, colors.black)
+    monitor.setCursorPos(2, height - 1)
+    monitor.write("ENABLE < 20%")
 
-    drawHorizontalLine(
-        monitor,
-        5,
-        colors.blue
-    )
-
-    -- Inventory title
-    monitor.setCursorPos(4, 7)
-    setMonitorColours(
-        monitor,
-        colors.cyan,
-        colors.black
-    )
-    monitor.write("ITEM INVENTORY")
-
-    -- Current / capacity
-    monitor.setCursorPos(4, 9)
-    setMonitorColours(
-        monitor,
-        colors.white,
-        colors.black
-    )
-
-    monitor.write(
-        formatNumber(count)
-        .. " / "
-        .. formatNumber(total)
-    )
-
-    -- Progress bar
-    local barWidth =
-        math.min(
-            math.max(12, width - 20),
-            28
-        )
-
-    local barX = 4
-    local barY = 11
-
-    drawProgressBar(
-        monitor,
-        barX,
-        barY,
-        barWidth,
-        percent
-    )
-
-    -- Status box
-    local boxY = math.min(14, height - 5)
-    local boxHeight = 3
-    local boxWidth = math.min(
-        width - 6,
-        32
-    )
-
-    drawStatusBox(
-        monitor,
-        3,
-        boxY,
-        boxWidth,
-        boxHeight,
-        state
-    )
-
-    -- Bottom divider
-    local dividerY =
-        math.min(
-            height - 3,
-            boxY + boxHeight + 1
-        )
-
-    drawHorizontalLine(
-        monitor,
-        dividerY,
-        colors.blue
-    )
-
-    -- Thresholds
-    setMonitorColours(
-        monitor,
-        colors.lime,
-        colors.black
-    )
-
-    monitor.setCursorPos(
-        4,
-        dividerY + 2
-    )
-
-    monitor.write(
-        "< "
-        .. tostring(config.enablePercent)
-        .. "% ENABLE"
-    )
-
-    setMonitorColours(
-        monitor,
-        colors.red,
-        colors.black
-    )
-
-    monitor.setCursorPos(
-        4,
-        dividerY + 3
-    )
-
-    monitor.write(
-        ">= "
-        .. tostring(config.disablePercent)
-        .. "% DISABLE"
-    )
+    setMonitorColours(monitor, colors.red, colors.black)
+    monitor.setCursorPos(math.max(16, math.floor(width / 2)), height - 1)
+    monitor.write("DISABLE >= 80%")
 end
 
-
 --------------------------------------------------
--- Get the current station name
---------------------------------------------------
-
-local function getStationName(
-    station
-)
-
-    local ok, name =
-        pcall(function()
-
-            return station.getStationName()
-
-        end)
-
-
-    if not ok then
-
-        return nil
-    end
-
-
-    return name
-end
-
-
---------------------------------------------------
--- Set station name
+-- Main controller
 --------------------------------------------------
 
-local function setStationName(
-    station,
-    name
-)
-
-    local currentName =
-        getStationName(
-            station
-        )
-
-
-    if not currentName then
-
-        return false
-    end
-
-
-    --------------------------------------------------
-    -- The name is already correct, no need to change it
-    --------------------------------------------------
-
-    if currentName == name then
-
-        return true
-    end
-
-
-    --------------------------------------------------
-    -- Rename
-    --------------------------------------------------
-
-    local ok, err =
-        pcall(function()
-
-            station.setStationName(
-                name
-            )
-
-        end)
-
-
-    if not ok then
-
-        log(
-            "Failed to rename station: "
-            .. tostring(err)
-        )
-
-        return false
-    end
-
-
-    return true
-end
-
-
---------------------------------------------------
--- Enable station
---------------------------------------------------
-
-local function enableStation(
-    station
-)
-
-    local currentName =
-        getStationName(
-            station
-        )
-
-
-    if not currentName then
-
-        return false
-    end
-
-
-    --------------------------------------------------
-    -- Already in normal state
-    --------------------------------------------------
-
-    if currentName
-        == config.stationName then
-
-        return true
-    end
-
-
-    log(
-        "Inventory is below the threshold; restoring station"
-    )
-
-
-    local success =
-        setStationName(
-            station,
-            config.stationName
-        )
-
-
-    if success then
-
-        log(
-            "Station ENABLED"
-        )
-
-        log(
-            "Name: "
-            .. config.stationName
-        )
-
-    end
-
-
-    return success
-end
-
-
---------------------------------------------------
--- Disable station
---------------------------------------------------
-
-local function disableStation(
-    station
-)
-
-    local currentName =
-        getStationName(
-            station
-        )
-
-
-    if not currentName then
-
-        return false
-    end
-
-
-    --------------------------------------------------
-    -- Already in disabled state
-    --------------------------------------------------
-
-    if currentName
-        == config.disabledName then
-
-        return true
-    end
-
-
-    log(
-        "Inventory has reached the disable threshold; disabling station"
-    )
-
-
-    local success =
-        setStationName(
-            station,
-            config.disabledName
-        )
-
-
-    if success then
-
-        log(
-            "Station DISABLED"
-        )
-
-        log(
-            "Name: "
-            .. config.disabledName
-        )
-
-    end
-
-
-    return success
-end
-
-
---------------------------------------------------
--- Display status
---------------------------------------------------
-
-local function printStatus(
-    station,
-    count,
-    percent
-)
-
-    local stationName =
-        getStationName(
-            station
-        )
-
-
-    print()
-    print("----------------------------------------")
-
-    print(
-        "Station : "
-        .. tostring(stationName)
-    )
-
-    print(
-        "Item    : "
-        .. tostring(config.item)
-    )
-
-    print(
-        "Storage : "
-        .. tostring(count)
-        .. " / "
-        .. tostring(config.capacity)
-    )
-
-    print(
-        "Usage   : "
-        .. string.format(
-            "%.2f",
-            percent
-        )
-        .. "%"
-    )
-
-    print(
-        "Enable  : < "
-        .. tostring(
-            config.enablePercent
-        )
-        .. "%"
-    )
-
-    print(
-        "Disable : >= "
-        .. tostring(
-            config.disablePercent
-        )
-        .. "%"
-    )
-
-    print("----------------------------------------")
-end
-
-
---------------------------------------------------
--- Startup info
---------------------------------------------------
-
+local config = loadConfig()
 local monitor = getMonitor()
 
 term.clear()
 term.setCursorPos(1, 1)
 
-
 print("========================================")
-print(" Create Train Station Controller")
+print("      Factory Train Station Controller")
 print("========================================")
 print()
-
-print(
-    "Station: "
-    .. config.stationName
-)
-
-print(
-    "Inventory: "
-    .. config.inventoryPeripheral
-)
-
-print(
-    "Item: "
-    .. config.item
-)
-
+print("Stations: " .. tostring(#config.stations))
 print()
-
-
---------------------------------------------------
--- Main loop
---------------------------------------------------
 
 while true do
+    local rows = {}
 
-    --------------------------------------------------
-    -- Find station
-    --------------------------------------------------
+    for i, entry in ipairs(config.stations) do
+        local row = {
+            stationName = entry.stationName,
+            item = entry.item,
+            percent = 0,
+            count = 0,
+            state = "error"
+        }
 
-    local station =
-        findStation()
+        local station = findStation(entry)
+        local inventory = findInventory(entry)
 
-
-    if not station then
-
-        log(
-            "ERROR: Train Station not found."
-        )
-
-        log(
-            "Searching again in 5 seconds..."
-        )
-
-        sleep(5)
-
-    else
-
-        --------------------------------------------------
-        -- Find inventory
-        --------------------------------------------------
-
-        local inventory =
-            findInventory()
-
-
-        if not inventory then
-
-            log(
-                "ERROR: Inventory not found."
-            )
-
-            log(
-                "Peripheral: "
-                .. tostring(
-                    config.inventoryPeripheral
-                )
-            )
-
-            sleep(5)
-
+        if not station then
+            log("[" .. i .. "] Station not found: " .. entry.stationName)
+        elseif not inventory then
+            log("[" .. i .. "] Inventory not found: " .. entry.inventoryPeripheral)
         else
-
-            --------------------------------------------------
-            -- Read item
-            --------------------------------------------------
-
-            local count =
-                getItemCount(
-                    inventory
-                )
-
+            local count = getItemCount(inventory, entry.item)
 
             if count == nil then
-
-                log(
-                    "ERROR: Cannot read inventory."
-                )
-
-                sleep(5)
-
+                log("[" .. i .. "] Failed to read inventory: " .. entry.inventoryPeripheral)
             else
+                local percent = getPercentage(count, entry.capacity)
+                local state = updateStationState(station, entry, percent)
 
-                --------------------------------------------------
-                -- Calculate percentage
-                --------------------------------------------------
+                row.count = count
+                row.percent = percent
+                row.state = state
 
-                local percent =
-                    getPercentage(
-                        count
-                    )
-
-
-                --------------------------------------------------
-                -- Display
-                --------------------------------------------------
-
-                printStatus(
-                    station,
-                    count,
-                    percent
-                )
-
-                if monitor then
-
-                    local state = "hold"
-
-                    if percent < config.enablePercent then
-                        state = "enabled"
-                    elseif percent >= config.disablePercent then
-                        state = "disabled"
-                    end
-
-                    drawMonitorStatus(
-                        monitor,
-                        count,
-                        config.capacity,
-                        percent,
-                        state
-                    )
-                end
-
-
-                --------------------------------------------------
-                -- Status check
-                --------------------------------------------------
-
-                if percent
-                    < config.enablePercent then
-
-                    --------------------------------------------------
-                    -- Inventory low
-                    -- Open request station
-                    --------------------------------------------------
-
-                    enableStation(
-                        station
-                    )
-
-
-                elseif percent
-                    >= config.disablePercent then
-
-                    --------------------------------------------------
-                    -- Inventory high
-                    -- Block request station
-                    --------------------------------------------------
-
-                    disableStation(
-                        station
-                    )
-
-
-                else
-
-                    --------------------------------------------------
-                    -- Middle range
-                    -- Do not change state
-                    --------------------------------------------------
-
-                    log(
-                        "Keep the current station state"
-                    )
-
-                end
-
-
-                sleep(
-                    config.checkInterval
-                )
-
+                log(string.format(
+                    "[%d] %s | %s | %s / %s (%.1f%%) | %s",
+                    i,
+                    entry.stationName,
+                    entry.item,
+                    formatNumber(count),
+                    formatNumber(entry.capacity),
+                    percent,
+                    state
+                ))
             end
         end
+
+        table.insert(rows, row)
     end
 
+    if monitor then
+        drawDashboard(monitor, rows)
+    end
+
+    sleep(config.checkInterval)
 end
