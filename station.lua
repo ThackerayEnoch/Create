@@ -364,9 +364,24 @@ local function drawDashboard(monitor, rows)
     local rowHeight = 3
     local maxRows = math.max(1, math.floor(usableHeight / rowHeight))
     local shown = math.min(#rows, maxRows)
-    local nameWidth = math.max(10, math.floor(width * 0.36))
-    local itemWidth = math.max(8, math.floor(width * 0.25))
-    local barWidth = math.max(8, width - nameWidth - itemWidth - 14)
+
+    -- Keep the station and item columns wide enough for real factory names.
+    -- The progress/status column gets the remaining space.
+    -- Give the item column the most space because item IDs/names are often long.
+    -- Layout target: STATION ~30%, ITEM ~45%, STOCK ~25%.
+    local nameWidth = math.max(14, math.floor(width * 0.30))
+    local itemWidth = math.max(22, math.floor(width * 0.45))
+    local barStart = nameWidth + itemWidth + 4
+    local barWidth = math.max(8, width - barStart - 8)
+
+    -- Column headers
+    setMonitorColours(monitor, colors.lightGray, colors.black)
+    monitor.setCursorPos(1, 5)
+    monitor.write(shortName("STATION", nameWidth))
+    monitor.setCursorPos(nameWidth + 2, 5)
+    monitor.write(shortName("ITEM", itemWidth))
+    monitor.setCursorPos(barStart, 5)
+    monitor.write("STOCK")
 
     local y = 6
 
@@ -380,26 +395,31 @@ local function drawDashboard(monitor, rows)
             stateColour = colors.orange
         end
 
+        -- Station name column
         setMonitorColours(monitor, colors.white, colors.black)
         monitor.setCursorPos(1, y)
         monitor.write(shortName(row.stationName, nameWidth))
 
+        -- Item column: wider than the previous layout
+        setMonitorColours(monitor, colors.cyan, colors.black)
         monitor.setCursorPos(nameWidth + 2, y)
         monitor.write(shortName(row.item, itemWidth))
 
+        -- Progress bar in the remaining column
         drawProgressBar(
             monitor,
-            nameWidth + itemWidth + 4,
+            barStart,
             y,
             barWidth,
             row.percent
         )
 
+        -- Percentage and status below the item/progress row
         setMonitorColours(monitor, stateColour, colors.black)
         monitor.setCursorPos(nameWidth + 2, y + 1)
         monitor.write(string.format("%6.1f%%", row.percent))
 
-        monitor.setCursorPos(nameWidth + itemWidth + 4, y + 1)
+        monitor.setCursorPos(barStart, y + 1)
         monitor.write(row.state == "enabled" and "ONLINE"
             or row.state == "disabled" and "OFFLINE"
             or "ERROR")

@@ -14,7 +14,8 @@
       1. Run controller
       2. Install / replace all stations
       3. Update one station
-      4. Exit
+      4. Add one station
+      5. Exit
 ]]
 
 local CONFIG_PATH = "/config.lua"
@@ -629,6 +630,64 @@ local function createStartup()
 end
 
 --------------------------------------------------
+-- Timed startup menu choice
+-- If there is no input within timeout seconds,
+-- default to Run Controller.
+--------------------------------------------------
+
+local function timedMenuChoice(timeout)
+    local timer = os.startTimer(timeout)
+    local result = nil
+    local timedOut = false
+
+    local function inputTask()
+        result = read()
+    end
+
+    local function timerTask()
+        while true do
+            local event, id = os.pullEvent()
+            if event == "timer" and id == timer then
+                timedOut = true
+                return
+            end
+        end
+    end
+
+    parallel.waitForAny(inputTask, timerTask)
+
+    if timedOut then
+        return nil, true
+    end
+
+    return result, false
+end
+
+local function showStartupMenu(config)
+    clearScreen()
+    print("========================================")
+    print("       Factory Request Controller")
+    print("========================================")
+    print()
+
+    if config then
+        print("Configured stations: " .. tostring(#config.stations))
+    else
+        print("No configuration found.")
+    end
+
+    print()
+    print("[1] Run controller")
+    print("[2] Install / replace all stations")
+    print("[3] Update one station")
+    print("[4] Add one station")
+    print("[5] Exit")
+    print()
+    print("Default: Run controller in 5 seconds")
+    write("Select mode: ")
+end
+
+--------------------------------------------------
 -- Show configuration
 --------------------------------------------------
 
@@ -805,6 +864,80 @@ local function updateOne()
 end
 
 --------------------------------------------------
+-- Add one station to an existing configuration
+--------------------------------------------------
+
+local function addOne()
+    local config = loadConfig()
+
+    if not config then
+        print("No existing configuration. Use Install first.")
+        pause()
+        return
+    end
+
+    clearScreen()
+    print("========================================")
+    print("             ADD STATION")
+    print("========================================")
+    print()
+    print("Current stations: " .. tostring(#config.stations))
+    print()
+
+    local entry = bindStation(config, nil)
+
+    if not entry then
+        print("Add station cancelled or failed.")
+        pause()
+        return
+    end
+
+    table.insert(config.stations, entry)
+
+    local physical = peripheral.wrap(entry.physicalStation)
+    if physical then
+        local ok, err = pcall(function()
+            physical.setStationName(entry.stationName)
+        end)
+
+        if not ok then
+            table.remove(config.stations)
+            print("Failed to set station name: " .. tostring(err))
+            pause()
+            return
+        end
+    else
+        table.remove(config.stations)
+        print("Physical station disappeared during configuration.")
+        pause()
+        return
+    end
+
+    if not askYesNo("Write this station to config.lua?", "y") then
+        -- Restore the old station name when user cancels.
+        pcall(function()
+            physical.setStationName(entry.stationName)
+        end)
+        table.remove(config.stations)
+        print("Add station cancelled.")
+        pause()
+        return
+    end
+
+    writeConfig(config)
+    installStationProgram()
+    installInstallerProgram()
+    createStartup()
+
+    print()
+    print("Station added successfully.")
+    print("Name: " .. entry.stationName)
+    print("Item: " .. entry.item)
+    print("Total stations: " .. tostring(#config.stations))
+    pause()
+end
+
+--------------------------------------------------
 -- Run controller
 --------------------------------------------------
 
@@ -826,36 +959,33 @@ end
 while true do
     local config = loadConfig()
 
-    clearScreen()
-    print("========================================")
-    print("       Factory Request Controller")
-    print("========================================")
-    print()
+    showStartupMenu(config)
 
-    if config then
-        print("Configured stations: " .. tostring(#config.stations))
-    else
-        print("No configuration found.")
-    end
+    local choice, timedOut = timedMenuChoice(5)
 
-    print()
-    print("[1] Run controller")
-    print("[2] Install / replace all stations")
-    print("[3] Update one station")
-    print("[4] Exit")
-    print()
-
-    local choice = ask("Select mode")
-
-    if choice == "1" then
+    if timedOut then
+        print()
+        print("No selection. Starting controller...")
+        sleep(1)
         runController()
+
+    elseif choice == "1" then
+        runController()
+
     elseif choice == "2" then
         installAll()
+
     elseif choice == "3" then
         updateOne()
+
     elseif choice == "4" then
+        addOne()
+
+    elseif choice == "5" then
         break
+
     else
+        print()
         print("Invalid selection.")
         sleep(1)
     end
