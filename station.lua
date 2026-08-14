@@ -212,25 +212,46 @@ local function updateStationState(station, entry, percent)
         return "error"
     end
 
-    if percent < entry.enablePercent then
-        if current ~= entry.stationName then
-            setStationName(station, entry.stationName)
+    -- State is latched:
+    --   - Only inventory below MIN can enable the station.
+    --   - Once enabled, it stays enabled until inventory reaches MAX.
+    --   - In the middle range, keep the current state unchanged.
+    if current == entry.stationName then
+        if percent >= entry.disablePercent then
+            if setStationName(station, entry.disabledName) then
+                return "disabled"
+            end
+            return "error"
         end
+
         return "enabled"
     end
 
-    if percent >= entry.disablePercent then
-        if current ~= entry.disabledName then
-            setStationName(station, entry.disabledName)
-        end
-        return "disabled"
-    end
-
     if current == entry.disabledName then
+        if percent < entry.enablePercent then
+            if setStationName(station, entry.stationName) then
+                return "enabled"
+            end
+            return "error"
+        end
+
         return "disabled"
     end
 
-    return "enabled"
+    -- Unknown/currently inconsistent station name.
+    -- Recover using the inventory thresholds:
+    -- below MIN -> ENABLE, otherwise stay DISABLED.
+    if percent < entry.enablePercent then
+        if setStationName(station, entry.stationName) then
+            return "enabled"
+        end
+    else
+        if setStationName(station, entry.disabledName) then
+            return "disabled"
+        end
+    end
+
+    return "error"
 end
 
 --------------------------------------------------
@@ -416,7 +437,7 @@ local function drawDashboard(monitor, rows)
 
     -- Layout:
     -- Station name and status share the first line.
-    -- Item name is on the second line.
+    -- Station/status and item name share the first row.
     -- Actual / maximum + percentage is directly below the item.
     local statusWidth =
         math.max(
@@ -445,7 +466,7 @@ local function drawDashboard(monitor, rows)
     local maxRows =
         math.max(
             1,
-            math.floor((height - 8) / 4)
+            math.floor((height - 8) / 3)
         )
 
     local shown =
@@ -547,7 +568,7 @@ local function drawDashboard(monitor, rows)
 
         monitor.setCursorPos(
             stationWidth + 3,
-            y + 1
+            y
         )
 
         monitor.write(
@@ -591,7 +612,7 @@ local function drawDashboard(monitor, rows)
 
         monitor.setCursorPos(
             stationWidth + 3,
-            y + 2
+            y + 1
         )
 
         monitor.write(
@@ -601,7 +622,7 @@ local function drawDashboard(monitor, rows)
             )
         )
 
-        y = y + 4
+        y = y + 3
     end
 
     --------------------------------------------------
