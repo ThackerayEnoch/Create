@@ -336,20 +336,13 @@ local function drawProgressBar(
     end
 end
 
-local function drawStatusText(
-    monitor,
-    x,
-    y,
-    state
-)
-    local label = "ONLINE"
+local function drawStatusText(monitor, x, y, state)
+    local label = "ENABLE"
     local colour = colors.lime
 
     if state == "disabled" then
-        label = "OFFLINE"
-        -- OFFLINE is still a normal station state, not a low-stock alarm.
-        -- Per the requested UI semantics, only low stock is red.
-        colour = colors.lime
+        label = "DISABLE"
+        colour = colors.red
     elseif state == "error" then
         label = "ERROR"
         colour = colors.orange
@@ -364,6 +357,7 @@ local function drawStatusText(
     monitor.setCursorPos(x, y)
     monitor.write(label)
 end
+
 
 local function shortName(value, width)
     local text = tostring(value or "")
@@ -385,10 +379,7 @@ local function shortName(value, width)
 end
 
 
-local function drawDashboard(
-    monitor,
-    rows
-)
+local function drawDashboard(monitor, rows)
     if not monitor then
         return
     end
@@ -401,8 +392,7 @@ local function drawDashboard(
         colors.black
     )
 
-    local width, height =
-        monitor.getSize()
+    local width, height = monitor.getSize()
 
     centerText(
         monitor,
@@ -424,64 +414,47 @@ local function drawDashboard(
         colors.blue
     )
 
-    --------------------------------------------------
-    -- Layout
-    --
-    -- STATION : 30%
-    -- ITEM    : 35%
-    -- STOCK   : 25%
-    -- STATUS  : remaining
-    --
-    -- The stock column contains:
-    --     actual / maximum  xx.x%
-    --------------------------------------------------
+    -- Layout:
+    -- Station name and status share the first line.
+    -- Item name is on the second line.
+    -- Actual / maximum + percentage is directly below the item.
+    local statusWidth =
+        math.max(
+            10,
+            math.floor(width * 0.16)
+        )
+
+    local contentWidth =
+        width - statusWidth - 3
 
     local stationWidth =
         math.max(
-            16,
-            math.floor(width * 0.30)
+            18,
+            math.floor(contentWidth * 0.42)
         )
 
     local itemWidth =
         math.max(
-            20,
-            math.floor(width * 0.35)
-        )
-
-    local stockWidth =
-        math.max(
             18,
-            math.floor(width * 0.25)
+            contentWidth - stationWidth - 2
         )
 
-    local statusStart =
-        stationWidth
-        + itemWidth
-        + stockWidth
-        + 4
+    local statusX =
+        width - statusWidth + 1
 
-    -- Prevent the status column from falling outside the display.
-    if statusStart > width - 7 then
-        stockWidth =
-            math.max(
-                14,
-                width
-                    - stationWidth
-                    - itemWidth
-                    - 12
-            )
+    local maxRows =
+        math.max(
+            1,
+            math.floor((height - 8) / 4)
+        )
 
-        statusStart =
-            stationWidth
-            + itemWidth
-            + stockWidth
-            + 4
-    end
+    local shown =
+        math.min(
+            #rows,
+            maxRows
+        )
 
-    --------------------------------------------------
-    -- Column headers
-    --------------------------------------------------
-
+    -- Header
     setMonitorColours(
         monitor,
         colors.lightGray,
@@ -497,7 +470,7 @@ local function drawDashboard(
     )
 
     monitor.setCursorPos(
-        stationWidth + 2,
+        stationWidth + 3,
         5
     )
 
@@ -509,48 +482,16 @@ local function drawDashboard(
     )
 
     monitor.setCursorPos(
-        stationWidth
-        + itemWidth
-        + 3,
+        statusX,
         5
     )
 
     monitor.write(
         shortName(
-            "STOCK",
-            stockWidth
+            "STATUS",
+            statusWidth
         )
     )
-
-    monitor.setCursorPos(
-        statusStart,
-        5
-    )
-
-    monitor.write("STATUS")
-
-    --------------------------------------------------
-    -- Rows
-    --------------------------------------------------
-
-    local usableHeight =
-        height - 6
-
-    local rowHeight = 3
-
-    local maxRows =
-        math.max(
-            1,
-            math.floor(
-                usableHeight / rowHeight
-            )
-        )
-
-    local shown =
-        math.min(
-            #rows,
-            maxRows
-        )
 
     local y = 6
 
@@ -559,7 +500,7 @@ local function drawDashboard(
         local row = rows[i]
 
         --------------------------------------------------
-        -- Station
+        -- Station name
         --------------------------------------------------
 
         setMonitorColours(
@@ -581,7 +522,21 @@ local function drawDashboard(
         )
 
         --------------------------------------------------
-        -- Item
+        -- Station status
+        --
+        -- ENABLE = green
+        -- DISABLE = red
+        --------------------------------------------------
+
+        drawStatusText(
+            monitor,
+            statusX,
+            y,
+            row.state
+        )
+
+        --------------------------------------------------
+        -- Item name
         --------------------------------------------------
 
         setMonitorColours(
@@ -591,8 +546,8 @@ local function drawDashboard(
         )
 
         monitor.setCursorPos(
-            stationWidth + 2,
-            y
+            stationWidth + 3,
+            y + 1
         )
 
         monitor.write(
@@ -603,40 +558,30 @@ local function drawDashboard(
         )
 
         --------------------------------------------------
-        -- Stock
+        -- Actual / maximum + percentage
         --
-        -- Example:
-        -- 3,215/4,096 78.5%
+        -- Red ONLY when below MIN.
+        -- Otherwise green.
         --------------------------------------------------
-
-        local stockX =
-            stationWidth
-            + itemWidth
-            + 3
-
-        local stockText =
-            formatNumber(
-                row.count
-            )
-            .. "/"
-            .. formatNumber(
-                row.capacity
-            )
-            .. " "
-            .. string.format(
-                "%.1f%%",
-                row.percent
-            )
 
         local stockColour =
             colors.lime
 
         if row.state == "error" then
             stockColour = colors.orange
-        elseif row.percent
-            < row.enablePercent then
+        elseif row.percent < row.enablePercent then
             stockColour = colors.red
         end
+
+        local stockText =
+            formatNumber(row.count)
+            .. " / "
+            .. formatNumber(row.capacity)
+            .. "  "
+            .. string.format(
+                "%.1f%%",
+                row.percent
+            )
 
         setMonitorColours(
             monitor,
@@ -645,56 +590,22 @@ local function drawDashboard(
         )
 
         monitor.setCursorPos(
-            stockX,
-            y
+            stationWidth + 3,
+            y + 2
         )
 
         monitor.write(
             shortName(
                 stockText,
-                stockWidth
+                itemWidth
             )
         )
 
-        --------------------------------------------------
-        -- Stock progress bar
-        --------------------------------------------------
-
-        local progressWidth =
-            math.max(
-                8,
-                math.min(
-                    stockWidth - 2,
-                    20
-                )
-            )
-
-        drawProgressBar(
-            monitor,
-            stockX,
-            y + 1,
-            progressWidth,
-            row.percent,
-            row.enablePercent
-        )
-
-        --------------------------------------------------
-        -- Status
-        --------------------------------------------------
-
-        drawStatusText(
-            monitor,
-            statusStart,
-            y,
-            row.state
-        )
-
-        y =
-            y + rowHeight
+        y = y + 4
     end
 
     --------------------------------------------------
-    -- Footer
+    -- Fixed-color legend
     --------------------------------------------------
 
     drawHorizontalLine(
@@ -720,16 +631,14 @@ local function drawDashboard(
 
     setMonitorColours(
         monitor,
-        colors.white,
+        colors.orange,
         colors.black
     )
 
     monitor.setCursorPos(
         math.max(
-            16,
-            math.floor(
-                width / 2
-            )
+            18,
+            math.floor(width / 2)
         ),
         height - 1
     )
