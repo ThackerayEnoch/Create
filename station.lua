@@ -324,151 +324,58 @@ end
 
 
 local function setMonitorColours(monitor, textColour, backgroundColour)
-
     if not monitor then
-
         return
     end
 
     if monitor.setBackgroundColour then
-
         monitor.setBackgroundColour(backgroundColour or colors.black)
         monitor.setTextColour(textColour or colors.white)
-
     else
-
         monitor.setBackgroundColor(backgroundColour or colors.black)
         monitor.setTextColor(textColour or colors.white)
     end
 end
 
 
-local function drawPixelLine(monitor, x1, y1, x2, y2, colour)
+local function getMonitor()
+    if config.monitorSide then
+        local side = tostring(config.monitorSide)
 
-    if not monitor or not monitor.drawPixel then
-
-        return
-    end
-
-    local dx = math.abs(x2 - x1)
-    local dy = math.abs(y2 - y1)
-    local sx = x1 < x2 and 1 or -1
-    local sy = y1 < y2 and 1 or -1
-    local err = dx - dy
-
-    while true do
-
-        monitor.drawPixel(x1, y1, colour)
-
-        if x1 == x2 and y1 == y2 then
-            break
-        end
-
-        local e2 = err * 2
-
-        if e2 > -dy then
-            err = err - dy
-            x1 = x1 + sx
-        end
-
-        if e2 < dx then
-            err = err + dx
-            y1 = y1 + sy
+        if peripheral.isPresent(side)
+            and peripheral.getType(side) == "monitor" then
+            return peripheral.wrap(side)
         end
     end
-end
 
-
-local function drawPixelRect(monitor, x1, y1, x2, y2, colour)
-
-    if not monitor or not monitor.drawPixel then
-
-        return
-    end
-
-    if x1 > x2 then
-        local temp = x1
-        x1 = x2
-        x2 = temp
-    end
-
-    if y1 > y2 then
-        local temp = y1
-        y1 = y2
-        y2 = temp
-    end
-
-    for y = y1, y2 do
-
-        for x = x1, x2 do
-            monitor.drawPixel(x, y, colour)
+    for _, peripheralName in ipairs(peripheral.getNames()) do
+        if peripheral.getType(peripheralName) == "monitor" then
+            return peripheral.wrap(peripheralName)
         end
     end
-end
 
-
-local function drawMonitorText(monitor, x, y, text, colour)
-
-    if not monitor then
-
-        return
-    end
-
-    if monitor.setCursorPos then
-
-        monitor.setCursorPos(x, y)
-        monitor.setTextColour(colour or colors.white)
-        monitor.write(text)
-        return
-    end
-
-    if monitor.drawText then
-        monitor.drawText(x, y, text, colour or colors.white)
-    end
-end
-
-
-local function supportsAdvancedGraphics(monitor)
-
-    return monitor and monitor.drawPixel ~= nil
+    return nil
 end
 
 
 local function prettyItemName(rawName)
-
     local item = tostring(rawName or "item")
     item = item:gsub("^.-:", "")
     item = item:gsub("_", " ")
     item = item:gsub("%s+", " ")
     item = item:gsub("^%s*(.-)%s*$", "%1")
 
-    if item == "" then
-        return "ITEM REQUEST"
-    end
-
-    local parts = {}
-
-    for part in item:gmatch("%S+") do
-        table.insert(parts, part)
-    end
-
-    if #parts == 0 then
-        return "ITEM REQUEST"
-    end
-
     local output = ""
 
-    for i, part in ipairs(parts) do
-
-        if i > 1 then
+    for part in item:gmatch("%S+") do
+        if output ~= "" then
             output = output .. " "
         end
-
         output = output .. string.upper(part)
     end
 
-    if not output:match("REQUEST") then
-        output = output .. " REQUEST"
+    if output == "" then
+        return "ITEM REQUEST"
     end
 
     return output
@@ -476,155 +383,400 @@ end
 
 
 local function prettyStationName(rawName)
-
     local name = tostring(rawName or "Station")
     name = name:gsub("^.-_", "")
     name = name:gsub("_", " ")
     name = name:gsub("%s+", " ")
     name = name:gsub("^%s*(.-)%s*$", "%1")
 
-    if name == "" then
-        return "STATION STATUS"
-    end
-
     local output = ""
 
     for part in name:gmatch("%S+") do
-
         if output ~= "" then
             output = output .. " "
         end
-
         output = output .. string.upper(part)
     end
 
     if output == "" then
-        return "STATION STATUS"
+        return "FACTORY REQUEST"
     end
 
     return output
 end
 
 
-local function drawMonitorStatus(monitor, count, total, percent, state)
+local function centerText(monitor, y, text, colour)
+    local width = select(1, monitor.getSize())
+    local value = tostring(text or "")
 
+    if #value > width then
+        value = value:sub(1, width)
+    end
+
+    local x = math.max(1, math.floor((width - #value) / 2) + 1)
+
+    setMonitorColours(
+        monitor,
+        colour or colors.white,
+        colors.black
+    )
+
+    monitor.setCursorPos(x, y)
+    monitor.write(value)
+end
+
+
+local function drawHorizontalLine(monitor, y, colour)
+    local width = select(1, monitor.getSize())
+
+    setMonitorColours(
+        monitor,
+        colour or colors.blue,
+        colors.black
+    )
+
+    monitor.setCursorPos(1, y)
+    monitor.write(string.rep("=", width))
+end
+
+
+local function drawProgressBar(monitor, x, y, width, percent)
+    local clamped = tonumber(percent) or 0
+
+    if clamped < 0 then
+        clamped = 0
+    elseif clamped > 100 then
+        clamped = 100
+    end
+
+    local filled = math.floor(width * clamped / 100)
+
+    -- Background bar
+    paintutils.drawFilledBox(
+        x,
+        y,
+        x + width - 1,
+        y + 1,
+        colors.gray
+    )
+
+    -- Filled bar
+    if filled > 0 then
+        local fillColour = colors.lime
+
+        if clamped >= 80 then
+            fillColour = colors.red
+        elseif clamped >= 60 then
+            fillColour = colors.yellow
+        end
+
+        paintutils.drawFilledBox(
+            x,
+            y,
+            x + filled - 1,
+            y + 1,
+            fillColour
+        )
+    end
+
+    -- Percentage
+    local percentText =
+        string.format("%.1f%%", clamped)
+
+    setMonitorColours(
+        monitor,
+        colors.white,
+        colors.black
+    )
+
+    monitor.setCursorPos(
+        x + width + 2,
+        y
+    )
+
+    monitor.write(percentText)
+end
+
+
+local function drawStatusBox(
+    monitor,
+    x,
+    y,
+    width,
+    height,
+    state
+)
+    local borderColour = colors.lime
+    local statusColour = colors.lime
+    local statusText = "REQUEST ENABLED"
+
+    if state == "disabled" then
+        borderColour = colors.red
+        statusColour = colors.red
+        statusText = "REQUEST DISABLED"
+    elseif state == "hold" then
+        borderColour = colors.yellow
+        statusColour = colors.yellow
+        statusText = "REQUEST HOLD"
+    end
+
+    -- Outer box
+    paintutils.drawBox(
+        x,
+        y,
+        x + width - 1,
+        y + height - 1,
+        borderColour
+    )
+
+    -- Status marker
+    paintutils.drawFilledBox(
+        x + 2,
+        y + 2,
+        x + 3,
+        y + height - 3,
+        statusColour
+    )
+
+    -- Status text
+    local statusX =
+        x + 6
+
+    setMonitorColours(
+        monitor,
+        statusColour,
+        colors.black
+    )
+
+    monitor.setCursorPos(
+        statusX,
+        y + math.floor(height / 2)
+    )
+
+    monitor.write(statusText)
+end
+
+
+local function drawMonitorStatus(
+    monitor,
+    count,
+    total,
+    percent,
+    state
+)
     if not monitor then
-
         return
     end
 
-    local actualPercent = tonumber(percent) or 0
-    local barPercent = actualPercent
-
-    if barPercent > 100 then
-        barPercent = 100
-    elseif barPercent < 0 then
-        barPercent = 0
-    end
-
-    local title = prettyItemName(config.item)
-    local subtitle = prettyStationName(config.stationName)
-    local usageLabel = "REQUEST ENABLED"
-
-    if state == "disabled" then
-        usageLabel = "REQUEST DISABLED"
-    elseif state == "hold" then
-        usageLabel = "REQUEST HOLD"
-    end
-
+    -- Use the drawing API rather than Unicode box-drawing characters.
     local width, height = monitor.getSize()
-    local maxX = width or 32
-    local maxY = height or 20
 
-    if monitor.setTextScale then
-        monitor.setTextScale(0.5)
-    end
-
+    monitor.setTextScale(0.5)
     monitor.clear()
 
-    if not supportsAdvancedGraphics(monitor) then
+    setMonitorColours(
+        monitor,
+        colors.white,
+        colors.black
+    )
 
-        setMonitorColours(monitor, colors.white, colors.black)
-        monitor.setCursorPos(1, 1)
-        monitor.write(title)
-        monitor.setCursorPos(1, 2)
-        monitor.write(subtitle)
-        monitor.setCursorPos(1, 3)
-        monitor.write(formatNumber(count) .. " / " .. formatNumber(total))
-        monitor.setCursorPos(1, 4)
-        monitor.write(string.format("%.1f%%", actualPercent))
-        monitor.setCursorPos(1, 5)
-        monitor.write(usageLabel)
+    -- The compact layout is intended for a monitor of at least 32x16.
+    if width < 32 or height < 16 then
+        centerText(
+            monitor,
+            1,
+            "FACTORY REQUEST",
+            colors.white
+        )
+
+        centerText(
+            monitor,
+            2,
+            prettyItemName(config.item),
+            colors.cyan
+        )
+
+        monitor.setCursorPos(2, 4)
+        monitor.write(
+            formatNumber(count)
+            .. " / "
+            .. formatNumber(total)
+        )
+
+        drawProgressBar(
+            monitor,
+            2,
+            6,
+            math.max(12, width - 12),
+            percent
+        )
+
+        local status =
+            state == "enabled"
+            and "ONLINE"
+            or state == "disabled"
+            and "OFFLINE"
+            or "HOLD"
+
+        centerText(
+            monitor,
+            9,
+            status,
+            state == "enabled"
+                and colors.lime
+                or state == "disabled"
+                and colors.red
+                or colors.yellow
+        )
+
+        centerText(
+            monitor,
+            11,
+            "< "
+            .. tostring(config.enablePercent)
+            .. "% ENABLE",
+            colors.lime
+        )
+
+        centerText(
+            monitor,
+            12,
+            ">= "
+            .. tostring(config.disablePercent)
+            .. "% DISABLE",
+            colors.red
+        )
+
         return
     end
 
-    local borderColour = colors.lightGray
-    local panelColour = colors.black
-    local fillColour = colors.gray
-    local accentColour = colors.lime
+    -- Main title
+    centerText(
+        monitor,
+        2,
+        prettyItemName(config.item),
+        colors.white
+    )
 
-    if state == "disabled" then
-        accentColour = colors.red
-    elseif state == "hold" then
-        accentColour = colors.yellow
-    end
+    centerText(
+        monitor,
+        3,
+        prettyStationName(config.stationName),
+        colors.yellow
+    )
 
-    drawPixelRect(monitor, 1, 1, maxX, maxY, borderColour)
-    drawPixelRect(monitor, 2, 2, maxX - 1, maxY - 1, panelColour)
+    drawHorizontalLine(
+        monitor,
+        5,
+        colors.blue
+    )
 
-    local innerX1 = 3
-    local innerX2 = maxX - 2
-    local innerY1 = 3
-    local innerY2 = maxY - 2
+    -- Inventory title
+    monitor.setCursorPos(4, 7)
+    setMonitorColours(
+        monitor,
+        colors.cyan,
+        colors.black
+    )
+    monitor.write("ITEM INVENTORY")
 
-    for y = innerY1, innerY2 do
-        for x = innerX1, innerX2 do
-            if x == innerX1 or x == innerX2 or y == innerY1 or y == innerY2 then
-                monitor.drawPixel(x, y, borderColour)
-            end
-        end
-    end
+    -- Current / capacity
+    monitor.setCursorPos(4, 9)
+    setMonitorColours(
+        monitor,
+        colors.white,
+        colors.black
+    )
 
-    drawPixelRect(monitor, 4, 4, maxX - 3, 4, borderColour)
-    drawPixelRect(monitor, 4, 5, maxX - 3, 5, fillColour)
+    monitor.write(
+        formatNumber(count)
+        .. " / "
+        .. formatNumber(total)
+    )
 
-    local titleColour = colors.white
-    local subtitleColour = colors.white
-    if state == "disabled" then
-        titleColour = colors.red
-    elseif state == "enabled" then
-        titleColour = colors.lime
-    else
-        titleColour = colors.yellow
-    end
+    -- Progress bar
+    local barWidth =
+        math.min(
+            math.max(12, width - 20),
+            28
+        )
 
-    drawMonitorText(monitor, 5, 2, title, titleColour)
-    drawMonitorText(monitor, 5, 3, subtitle, subtitleColour)
+    local barX = 4
+    local barY = 11
 
-    local dividerY = 7
-    drawPixelLine(monitor, 4, dividerY, maxX - 3, dividerY, borderColour)
+    drawProgressBar(
+        monitor,
+        barX,
+        barY,
+        barWidth,
+        percent
+    )
 
-    drawMonitorText(monitor, 5, 9, "ITEM INVENTORY", colors.lightGray)
-    drawMonitorText(monitor, 5, 10, formatNumber(count) .. " / " .. formatNumber(total), colors.white)
+    -- Status box
+    local boxY = math.min(14, height - 5)
+    local boxHeight = 3
+    local boxWidth = math.min(
+        width - 6,
+        32
+    )
 
-    local barX = 5
-    local barY = 12
-    local barW = 22
-    local barH = 2
-    local filledW = math.floor((barPercent / 100) * barW)
-    if filledW > barW then
-        filledW = barW
-    end
+    drawStatusBox(
+        monitor,
+        3,
+        boxY,
+        boxWidth,
+        boxHeight,
+        state
+    )
 
-    drawPixelRect(monitor, barX, barY, barX + barW - 1, barY + barH - 1, colors.gray)
-    drawPixelRect(monitor, barX, barY, barX + filledW - 1, barY + barH - 1, accentColour)
+    -- Bottom divider
+    local dividerY =
+        math.min(
+            height - 3,
+            boxY + boxHeight + 1
+        )
 
-    drawMonitorText(monitor, 5, 15, string.format("%.1f%%", actualPercent), colors.white)
-    drawMonitorText(monitor, 5, 16, usageLabel, accentColour)
+    drawHorizontalLine(
+        monitor,
+        dividerY,
+        colors.blue
+    )
 
-    drawPixelLine(monitor, 4, 18, maxX - 3, 18, borderColour)
-    drawMonitorText(monitor, 5, 19, "< " .. tostring(config.enablePercent) .. "% ENABLE", colors.lime)
-    drawMonitorText(monitor, 5, 20, ">= " .. tostring(config.disablePercent) .. "% DISABLE", colors.red)
+    -- Thresholds
+    setMonitorColours(
+        monitor,
+        colors.lime,
+        colors.black
+    )
+
+    monitor.setCursorPos(
+        4,
+        dividerY + 2
+    )
+
+    monitor.write(
+        "< "
+        .. tostring(config.enablePercent)
+        .. "% ENABLE"
+    )
+
+    setMonitorColours(
+        monitor,
+        colors.red,
+        colors.black
+    )
+
+    monitor.setCursorPos(
+        4,
+        dividerY + 3
+    )
+
+    monitor.write(
+        ">= "
+        .. tostring(config.disablePercent)
+        .. "% DISABLE"
+    )
 end
 
 
