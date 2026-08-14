@@ -428,6 +428,12 @@ local function drawMonitorText(monitor, x, y, text, colour)
 end
 
 
+local function supportsAdvancedGraphics(monitor)
+
+    return monitor and monitor.drawPixel ~= nil
+end
+
+
 local function prettyItemName(rawName)
 
     local item = tostring(rawName or "item")
@@ -535,6 +541,22 @@ local function drawMonitorStatus(monitor, count, total, percent, state)
     end
 
     monitor.clear()
+
+    if not supportsAdvancedGraphics(monitor) then
+
+        setMonitorColours(monitor, colors.white, colors.black)
+        monitor.setCursorPos(1, 1)
+        monitor.write(title)
+        monitor.setCursorPos(1, 2)
+        monitor.write(subtitle)
+        monitor.setCursorPos(1, 3)
+        monitor.write(formatNumber(count) .. " / " .. formatNumber(total))
+        monitor.setCursorPos(1, 4)
+        monitor.write(string.format("%.1f%%", actualPercent))
+        monitor.setCursorPos(1, 5)
+        monitor.write(usageLabel)
+        return
+    end
 
     local borderColour = colors.lightGray
     local panelColour = colors.black
