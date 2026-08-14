@@ -270,6 +270,278 @@ local function getPercentage(
 end
 
 
+local function formatNumber(value)
+
+    local number = tonumber(value) or 0
+
+    if number >= 1000 then
+
+        local formatted = tostring(math.floor(number))
+        local output = ""
+        local index = 0
+
+        for i = #formatted, 1, -1 do
+
+            output = formatted:sub(i, i) .. output
+            index = index + 1
+
+            if index % 3 == 0 and i > 1 then
+
+                output = "," .. output
+            end
+        end
+
+        return output
+    end
+
+    return tostring(math.floor(number))
+end
+
+
+local function getMonitor()
+
+    if config.monitorSide then
+
+        local side = tostring(config.monitorSide)
+
+        if peripheral.isPresent(side)
+            and peripheral.getType(side) == "monitor" then
+
+            return peripheral.wrap(side)
+        end
+    end
+
+    for _, peripheralName in ipairs(peripheral.getNames()) do
+
+        if peripheral.getType(peripheralName) == "monitor" then
+
+            return peripheral.wrap(peripheralName)
+        end
+    end
+
+    return nil
+end
+
+
+local function setMonitorColours(monitor, textColour, backgroundColour)
+
+    if not monitor then
+
+        return
+    end
+
+    if monitor.setBackgroundColour then
+
+        monitor.setBackgroundColour(backgroundColour or colors.black)
+        monitor.setTextColour(textColour or colors.white)
+
+    else
+
+        monitor.setBackgroundColor(backgroundColour or colors.black)
+        monitor.setTextColor(textColour or colors.white)
+    end
+end
+
+
+local function prettyItemName(rawName)
+
+    local item = tostring(rawName or "item")
+    item = item:gsub("^.-:", "")
+    item = item:gsub("_", " ")
+    item = item:gsub("%s+", " ")
+    item = item:gsub("^%s*(.-)%s*$", "%1")
+
+    if item == "" then
+        return "ITEM REQUEST"
+    end
+
+    local parts = {}
+
+    for part in item:gmatch("%S+") do
+        table.insert(parts, part)
+    end
+
+    if #parts == 0 then
+        return "ITEM REQUEST"
+    end
+
+    local output = ""
+
+    for i, part in ipairs(parts) do
+
+        if i > 1 then
+            output = output .. " "
+        end
+
+        output = output .. string.upper(part)
+    end
+
+    if not output:match("REQUEST") then
+        output = output .. " REQUEST"
+    end
+
+    return output
+end
+
+
+local function prettyStationName(rawName)
+
+    local name = tostring(rawName or "Station")
+    name = name:gsub("^.-_", "")
+    name = name:gsub("_", " ")
+    name = name:gsub("%s+", " ")
+    name = name:gsub("^%s*(.-)%s*$", "%1")
+
+    if name == "" then
+        return "STATION STATUS"
+    end
+
+    local output = ""
+
+    for part in name:gmatch("%S+") do
+
+        if output ~= "" then
+            output = output .. " "
+        end
+
+        output = output .. string.upper(part)
+    end
+
+    if output == "" then
+        return "STATION STATUS"
+    end
+
+    return output
+end
+
+
+local function drawMonitorStatus(monitor, count, total, percent, state)
+
+    if not monitor then
+
+        return
+    end
+
+    local title = prettyItemName(config.item)
+    local subtitle = prettyStationName(config.stationName)
+    local usageLabel = "REQUEST ENABLED"
+    local actualPercent = tonumber(percent) or 0
+    local barPercent = actualPercent
+
+    if barPercent > 100 then
+        barPercent = 100
+    elseif barPercent < 0 then
+        barPercent = 0
+    end
+
+    if state == "disabled" then
+        usageLabel = "REQUEST DISABLED"
+    elseif state == "hold" then
+        usageLabel = "REQUEST HOLD"
+    end
+
+    local barWidth = 24
+    local filledBlocks = math.floor(barPercent / 100 * barWidth)
+    if filledBlocks < 0 then
+        filledBlocks = 0
+    end
+    if filledBlocks > barWidth then
+        filledBlocks = barWidth
+    end
+
+    local fillText = ""
+    for i = 1, filledBlocks do
+        fillText = fillText .. "█"
+    end
+
+    local emptyText = ""
+    for i = 1, barWidth - filledBlocks do
+        emptyText = emptyText .. "░"
+    end
+
+    local lineOne = "┌──────────────────────────────────┐"
+    local lineTwo = "│ " .. string.sub(title .. string.rep(" ", 32), 1, 32) .. " │"
+    local lineThree = "│ " .. string.sub(subtitle .. string.rep(" ", 32), 1, 32) .. " │"
+    local blankLine = "│                                  │"
+    local divider = "│   ───────────────────────────   │"
+    local inventoryTitle = "│   " .. string.sub("ITEM INVENTORY" .. string.rep(" ", 20), 1, 20) .. " │"
+    local inventoryValue = "│   " .. string.sub(formatNumber(count) .. " / " .. formatNumber(total) .. string.rep(" ", 28), 1, 28) .. " │"
+    local progressText = "│   " .. string.sub(fillText .. emptyText .. " " .. string.format("%.1f%%", actualPercent) .. string.rep(" ", 30), 1, 30) .. " │"
+    local statusText = "│   " .. string.sub(usageLabel .. string.rep(" ", 28), 1, 28) .. " │"
+    local thresholdText = "│   < " .. tostring(config.enablePercent) .. "%  ENABLE                 │"
+    local disableText = "│   ≥ " .. tostring(config.disablePercent) .. "%  DISABLE                │"
+    local lastLine = "└──────────────────────────────────┘"
+
+    local lines = {
+        lineOne,
+        lineTwo,
+        lineThree,
+        blankLine,
+        divider,
+        blankLine,
+        inventoryTitle,
+        blankLine,
+        inventoryValue,
+        blankLine,
+        progressText,
+        blankLine,
+        statusText,
+        blankLine,
+        divider,
+        blankLine,
+        thresholdText,
+        disableText,
+        lastLine
+    }
+
+    if monitor.setTextScale then
+        monitor.setTextScale(0.5)
+    end
+
+    local width, height = monitor.getSize()
+    if width and height and height >= 20 then
+
+        monitor.clear()
+        setMonitorColours(monitor, colors.white, colors.black)
+
+        for i, line in ipairs(lines) do
+
+            if i <= height then
+                monitor.setCursorPos(1, i)
+                monitor.write(line)
+            end
+        end
+    else
+
+        monitor.clear()
+        setMonitorColours(monitor, colors.white, colors.black)
+        monitor.setCursorPos(1, 1)
+        monitor.write(title)
+        monitor.setCursorPos(1, 2)
+        monitor.write(subtitle)
+        monitor.setCursorPos(1, 3)
+        monitor.write(string.format("%s / %s", formatNumber(count), formatNumber(total)))
+        monitor.setCursorPos(1, 4)
+        monitor.write(string.format("%.1f%%", percent))
+        monitor.setCursorPos(1, 5)
+        monitor.write(usageLabel)
+    end
+
+    if state == "enabled" then
+        setMonitorColours(monitor, colors.lime, colors.black)
+    elseif state == "disabled" then
+        setMonitorColours(monitor, colors.red, colors.black)
+    else
+        setMonitorColours(monitor, colors.yellow, colors.black)
+    end
+
+    monitor.setCursorPos(10, 11)
+    monitor.write(fillText)
+    monitor.setCursorPos(10, 11)
+    monitor.write(fillText .. emptyText)
+end
+
+
 --------------------------------------------------
 -- Get the current station name
 --------------------------------------------------
@@ -547,6 +819,8 @@ end
 -- Startup info
 --------------------------------------------------
 
+local monitor = getMonitor()
+
 term.clear()
 term.setCursorPos(1, 1)
 
@@ -666,6 +940,25 @@ while true do
                     count,
                     percent
                 )
+
+                if monitor then
+
+                    local state = "hold"
+
+                    if percent < config.enablePercent then
+                        state = "enabled"
+                    elseif percent >= config.disablePercent then
+                        state = "disabled"
+                    end
+
+                    drawMonitorStatus(
+                        monitor,
+                        count,
+                        config.capacity,
+                        percent,
+                        state
+                    )
+                end
 
 
                 --------------------------------------------------
