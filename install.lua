@@ -146,6 +146,7 @@ local function writeConfig(config)
     for i, station in ipairs(config.stations) do
         file.writeLine("        {")
         file.writeLine("            id = " .. luaString(station.id) .. ",")
+        file.writeLine("            physicalStation = " .. luaString(station.physicalStation) .. ",")
         file.writeLine("            stationName = " .. luaString(station.stationName) .. ",")
         file.writeLine("            disabledName = " .. luaString(station.disabledName) .. ",")
         file.writeLine("            inventoryPeripheral = " .. luaString(station.inventoryPeripheral) .. ",")

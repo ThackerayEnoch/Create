@@ -42,12 +42,24 @@ end
 
 local function loadConfig()
     local ok, config = pcall(dofile, CONFIG_PATH)
+
     if not ok or type(config) ~= "table" then
         error("Invalid config.lua: " .. tostring(config))
     end
 
     config.stations = config.stations or {}
-    config.checkInterval = config.checkInterval or 5
+    config.checkInterval = tonumber(config.checkInterval) or 5
+
+    for i, entry in ipairs(config.stations) do
+        if type(entry) ~= "table" then
+            error("Invalid station entry at index " .. tostring(i))
+        end
+
+        -- Older configurations may not have physicalStation.
+        -- The station can still be recovered by its logical stationName.
+        entry.physicalStation = entry.physicalStation or nil
+    end
+
     return config
 end
 
@@ -352,6 +364,26 @@ local function drawStatusText(
     monitor.setCursorPos(x, y)
     monitor.write(label)
 end
+
+local function shortName(value, width)
+    local text = tostring(value or "")
+    width = tonumber(width) or 1
+
+    if width <= 0 then
+        return ""
+    end
+
+    if #text <= width then
+        return text
+    end
+
+    if width <= 3 then
+        return text:sub(1, width)
+    end
+
+    return text:sub(1, width - 3) .. "..."
+end
+
 
 local function drawDashboard(
     monitor,
