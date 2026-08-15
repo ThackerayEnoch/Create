@@ -638,6 +638,25 @@ local function handleAdvancedMessage(sender, message)
     end
 end
 
+local function handleRednetEvent(sender, message, protocolName)
+    if protocolName == nil then
+        log("RX REDNET #" .. tostring(sender) .. " protocol=nil")
+        return
+    end
+
+    if protocolName ~= protocol.PROTOCOL then
+        log("RX #" .. tostring(sender) .. " ignored protocol=" .. tostring(protocolName))
+        return
+    end
+
+    log("RX REDNET #" .. tostring(sender) .. " protocol=" .. tostring(protocolName))
+    local ok, err = pcall(handleAdvancedMessage, sender, message)
+    if not ok then
+        log("RX HANDLER ERROR #" .. tostring(sender) .. ": " .. tostring(err))
+    end
+end
+
+
 --------------------------------------------------
 -- Monitor drawing API
 --------------------------------------------------
@@ -1196,60 +1215,77 @@ local function controllerTick()
     end
 end
 
--- Run one tick immediately.
-controllerTick()
-
 if not config.advancedNetwork then
+    -- Legacy STANDALONE mode keeps the original simple polling loop.
     while true do
-        sleep(config.checkInterval)
         local ok, err = pcall(controllerTick)
         if not ok then
             log("CONTROLLER TICK ERROR: " .. tostring(err))
         end
+        sleep(config.checkInterval)
     end
 end
 
 --------------------------------------------------
--- Advanced runtime loop
+-- Advanced CLIENT_SERVER concurrency
 --
--- IMPORTANT:
--- Use ONE rednet.receive() consumer for the whole lifetime of the client.
--- Do not switch to os.pullEvent("rednet_message") and do not create a
--- second rednet.receive() coroutine. This keeps ALLOW_RENAME/PAUSE/ENABLE
--- reception on the exact same path that already works during installation.
+-- The controller tick performs peripheral calls such as inventory.list(),
+-- station.isTrainPresent(), tanks(), etc. These calls can yield while the
+-- peripheral is waiting for its response. Therefore network receive MUST run
+-- in a separate parallel coroutine; otherwise a rednet_message arriving during
+-- a peripheral call can be consumed by the event filter used by that call and
+-- never reach the station controller.
 --------------------------------------------------
 
-local nextControllerTick = os.clock() + config.checkInterval
+local function networkLoop()
+    log("Network listener started on " .. tostring(modemSide))
 
-while true do
-    local remaining = math.max(0.05, nextControllerTick - os.clock())
-
-    local okReceive, sender, message = pcall(function()
-        return rednet.receive(protocol.PROTOCOL, remaining)
-    end)
-
-    if not okReceive then
-        log("REDNET RECEIVE ERROR: " .. tostring(sender))
-        rednetOpened = false
-        modemSide = nil
-        openRednet()
-    elseif sender ~= nil then
-        -- The protocol argument above already filters unrelated Rednet
-        -- traffic. Keep this handler as the single RX path.
-        local okHandler, handlerErr = pcall(function()
-            handleAdvancedMessage(sender, message)
+    while true do
+        -- No timeout: this coroutine is dedicated exclusively to Rednet RX.
+        -- It is always waiting for the next network packet.
+        local ok, sender, message = pcall(function()
+            return rednet.receive(protocol.PROTOCOL)
         end)
 
-        if not okHandler then
-            log("RX HANDLER ERROR #" .. tostring(sender) .. ": " .. tostring(handlerErr))
+        if not ok then
+            log("REDNET RECEIVE ERROR: " .. tostring(sender))
+            rednetOpened = false
+            modemSide = nil
+            sleep(1)
+            openRednet()
+        elseif sender ~= nil then
+            -- Keep the RX coroutine alive even if one malformed packet or
+            -- one station-name update causes an exception.
+            local handlerOk, handlerErr = pcall(function()
+                handleAdvancedMessage(sender, message)
+            end)
+            if not handlerOk then
+                log("RX HANDLER ERROR #" .. tostring(sender) .. ": " .. tostring(handlerErr))
+            end
         end
-    end
-
-    if os.clock() >= nextControllerTick then
-        local okTick, tickErr = pcall(controllerTick)
-        if not okTick then
-            log("CONTROLLER TICK ERROR: " .. tostring(tickErr))
-        end
-        nextControllerTick = os.clock() + config.checkInterval
     end
 end
+
+local function tickLoop()
+    log("Controller tick loop started")
+
+    while true do
+        -- Run immediately so the station does not wait one full interval
+        -- after startup before determining its state.
+        local ok, err = pcall(controllerTick)
+        if not ok then
+            log("CONTROLLER TICK ERROR: " .. tostring(err))
+        end
+
+        -- While this coroutine sleeps, networkLoop remains blocked inside
+        -- rednet.receive() and can process incoming ALLOW/PAUSE/ENABLE.
+        sleep(config.checkInterval)
+    end
+end
+
+-- Both loops are intentionally infinite. waitForAny is safe here because
+-- neither worker is expected to return during normal operation. More
+-- importantly, the network coroutine is independent from peripheral polling.
+parallel.waitForAny(networkLoop, tickLoop)
+
+error("Advanced controller stopped unexpectedly")

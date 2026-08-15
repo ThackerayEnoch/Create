@@ -1,8 +1,8 @@
-Advanced Train Dispatch v11
+Advanced Train Dispatch v13
 
-Change from v10:
-- Supply server still broadcasts ALLOW_RENAME as required.
-- Supply server additionally sends the same ALLOW_RENAME payload directly to the requesting client ID.
-- Payload still contains no source/destination fields.
-- Client logs receipt of protocol-qualified Rednet messages before handling them.
-- This makes the server->requesting-client path observable and robust while preserving the broadcast protocol.
+CLIENT_SERVER mode now uses two parallel coroutines:
+- networkLoop(): dedicated rednet.receive() listener
+- tickLoop(): periodic peripheral/inventory/controller work
+
+This avoids losing rednet_message events while peripheral calls yield.
+STANDALONE mode keeps the legacy polling behavior.
