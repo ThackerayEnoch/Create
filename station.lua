@@ -33,6 +33,7 @@ local rednetOpened = false
 local serverByResource = {}
 local pausedByResource = {}
 local lastRequestAt = {}
+local lastHeartbeatAt = {}
 local noResourceReported = {}
 local trainWasPresent = {}
 local runtimeConfig = nil
@@ -599,7 +600,15 @@ local function advancedState(station, entry, inventory, count, percent)
         end
     end
 
-    if paused then return "waiting" end
+    if current == requestName then
+        local lastHeartbeat = lastHeartbeatAt[resource]
+        if not lastHeartbeat or os.clock() - lastHeartbeat >= 20 then
+            lastHeartbeatAt[resource] = os.clock()
+            broadcastMessage(protocol.HEARTBEAT, resource)
+        end
+    end
+
+    if paused then return "paused" end
     if current == waitingName then return "waiting" end
     if current == requestName then return "enabled" end
     return "disabled"
@@ -640,6 +649,11 @@ local function handleAdvancedMessage(sender, message)
 
     if message.type == protocol.PAUSE and resource then
         pausedByResource[resource] = true
+        return
+    end
+
+    if message.type == protocol.HEARTBEAT and resource then
+        lastRequestAt[resource] = os.clock()
         return
     end
 
@@ -799,6 +813,9 @@ local function drawStatusText(monitor, x, y, state)
     elseif state == "waiting" then
         label = "WAITING"
         colour = colors.yellow
+    elseif state == "paused" then
+        label = "PAUSED"
+        colour = colors.orange
     elseif state == "error" then
         label = "ERROR"
         colour = colors.orange
@@ -863,6 +880,22 @@ local function drawDashboard(monitor, rows)
         "MULTI-STATION STATUS",
         colors.cyan
     )
+
+    local pausedAny = false
+    for _, row in ipairs(rows or {}) do
+        if row.state == "paused" then
+            pausedAny = true
+            break
+        end
+    end
+
+    setMonitorColours(
+        monitor,
+        pausedAny and colors.orange or colors.lime,
+        colors.black
+    )
+    monitor.setCursorPos(1, 3)
+    monitor.write("PAUSED: " .. (pausedAny and "YES" or "NO"))
 
     drawHorizontalLine(
         monitor,
@@ -1174,6 +1207,30 @@ print()
 if config.advancedNetwork then
     openRednet()
     discoverServers()
+    broadcastMessage(protocol.HELLO)
+
+    for _, entry in ipairs(config.stations or {}) do
+        if entry.advanced then
+            local station = findStation(entry)
+            local inventory = findInventory(entry)
+            if station and inventory then
+                local count = getItemCount(inventory, entry.item)
+                if count ~= nil then
+                    local percent = getPercentage(count, entry.capacity)
+                    local _, result = pcall(advancedState, station, entry, inventory, count, percent)
+                    if result then
+                        log("BOOT INIT " .. tostring(entry.stationName) .. " -> " .. tostring(result))
+                    end
+                else
+                    local name = entry.waitingName or ("WATTING_" .. (entry.requestName or (entry.resourceType or entry.item)))
+                    pcall(function()
+                        setStationName(station, name)
+                    end)
+                    log("BOOT INIT " .. tostring(entry.stationName) .. " -> WAITING (inventory read failed)")
+                end
+            end
+        end
+    end
 end
 
 local function controllerTick()
@@ -1267,21 +1324,9 @@ end
 --------------------------------------------------
 
 local function networkLoop()
-    log("========== NETWORK LOOP START ==========")
-
     while true do
-        log("RX WAIT")
-
         local sender, message, protocolName =
             rednet.receive(protocol.PROTOCOL)
-
-        log(
-            "RX GOT sender=" ..
-            tostring(sender) ..
-            " protocol=" ..
-            tostring(protocolName)
-        )
-
         if type(message) == "table" then
             log("RX TYPE=" .. tostring(message.type))
 
@@ -1299,8 +1344,6 @@ local function networkLoop()
 end
 
 local function tickLoop()
-    log("Controller tick loop started")
-
     while true do
         -- 启动后立即执行一次
         local ok, err = pcall(controllerTick)
@@ -1317,16 +1360,8 @@ end
 -- Both loops are intentionally infinite. waitForAny is safe here because
 -- neither worker is expected to return during normal operation. More
 -- importantly, the network coroutine is independent from peripheral polling.
-log("========== BEFORE PARALLEL ==========")
-
-log("networkLoop = " .. tostring(networkLoop))
-log("tickLoop = " .. tostring(tickLoop))
-
 parallel.waitForAny(
     networkLoop,
     tickLoop
 )
-
-log("========== AFTER PARALLEL ==========")
-
 error("Advanced controller stopped unexpectedly")

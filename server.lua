@@ -88,7 +88,8 @@ local function saveConfig(config)
     file.writeLine("    factoryId = " .. string.format("%q", config.factoryId) .. ",")
     file.writeLine("    resourceType = " .. string.format("%q", config.resourceType) .. ",")
     file.writeLine("    resourceKind = " .. string.format("%q", config.resourceKind) .. ",")
-    file.writeLine("    trainStoragePeripheral = " .. string.format("%q", config.trainStoragePeripheral))
+    file.writeLine("    trainStoragePeripheral = " .. string.format("%q", config.trainStoragePeripheral) .. ",")
+    file.writeLine("    containerSize = " .. tostring(tonumber(config.containerSize) or 0))
     file.writeLine("}")
     file.close()
 end
@@ -262,6 +263,11 @@ local function installServer()
     local station = selectStation()
     local storage = selectStorage()
     local resource = selectResource(storage)
+    local containerSize = 0
+    local sizeOk, size = pcall(function() return storage.peripheral.size() end)
+    if sizeOk and tonumber(size) then
+        containerSize = tonumber(size)
+    end
 
     clearScreen()
     print("=== Supply Server Setup ===")
@@ -282,7 +288,8 @@ local function installServer()
         factoryId = factoryId,
         resourceType = resource,
         resourceKind = storage.kind,
-        trainStoragePeripheral = storage.peripheralName
+        trainStoragePeripheral = storage.peripheralName,
+        containerSize = containerSize
     })
 
     if fs.exists("/disk/server.lua") then
@@ -492,8 +499,15 @@ local function isFull()
         return totalCapacity > 0 and totalAmount >= totalCapacity
     end
 
+    local savedSize = tonumber(config.containerSize) or 0
     local okSize, size = pcall(function() return storage.size() end)
-    if not okSize or not size or size <= 0 then return false end
+    local sizeLimit = 0
+    if savedSize and savedSize > 0 then
+        sizeLimit = savedSize
+    elseif okSize and size and size > 0 then
+        sizeLimit = size
+    end
+    if sizeLimit <= 0 then return false end
 
     local okList, items = pcall(function() return storage.list() end)
     if not okList or type(items) ~= "table" then return false end
@@ -507,7 +521,7 @@ local function isFull()
         end
     end
 
-    return usedSlots >= size and resourceCount > 0
+    return usedSlots >= sizeLimit and resourceCount > 0
 end
 
 local function runInitialState()
@@ -543,6 +557,10 @@ while true do
 
         if messageType == protocol.HELLO then
             sendAnswer(sender)
+
+        elseif messageType == protocol.HEARTBEAT and messageResource == resourceType then
+            noRequestSince = os.clock()
+            addLog("RX HEARTBEAT -> #" .. tostring(sender) .. " [" .. resourceType .. "]")
 
         elseif messageResource == resourceType and messageType == protocol.REQUEST_RENAME then
             noRequestSince = os.clock()
