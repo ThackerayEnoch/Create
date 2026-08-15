@@ -768,6 +768,9 @@ local function scanTrainStorages()
 end
 
 local function selectTrainStorage(resourceKind)
+    local pageSize = 10
+    local page = 1
+
     while true do
         clearScreen()
         print("========================================")
@@ -777,19 +780,56 @@ local function selectTrainStorage(resourceKind)
         print("Select the peripheral exposed by the portable storage interface.")
         print("The train must currently be connected to the interface.")
         print()
-        local list=scanTrainStorages()
-        local visible={}
-        for _,x in ipairs(list) do
-            if not resourceKind or x.kind==resourceKind then table.insert(visible,x) end
+
+        local list = scanTrainStorages()
+        local visible = {}
+        for _, x in ipairs(list) do
+            if not resourceKind or x.kind == resourceKind then
+                table.insert(visible, x)
+            end
         end
-        for i,x in ipairs(visible) do print("["..i.."] "..x.peripheralName.."  type="..x.kind) end
-        if #visible==0 then
+
+        if #visible == 0 then
             print("No matching item/fluid storage peripheral found.")
             print("For fluids, ensure the portable interface exposes tanks().")
             pause()
         else
-            local n=tonumber(ask("Select train container"))
-            if n and visible[n] then return visible[n] end
+            local totalPages = math.ceil(#visible / pageSize)
+            if page > totalPages then
+                page = totalPages
+            end
+
+            local startIndex = (page - 1) * pageSize + 1
+            local endIndex = math.min(startIndex + pageSize - 1, #visible)
+
+            print("Page " .. tostring(page) .. "/" .. tostring(totalPages))
+            print()
+
+            for i = startIndex, endIndex do
+                local x = visible[i]
+                print("[" .. (i - startIndex + 1) .. "] " .. x.peripheralName .. "  type=" .. x.kind)
+            end
+
+            print()
+            print("[n] next page   [p] previous page   [q] cancel")
+
+            local input = string.lower(ask("Select train container"))
+
+            if input == "q" then
+                return nil
+            elseif input == "n" and page < totalPages then
+                page = page + 1
+            elseif input == "p" and page > 1 then
+                page = page - 1
+            else
+                local n = tonumber(input)
+                if n and visible[startIndex + n - 1] then
+                    return visible[startIndex + n - 1]
+                end
+
+                print("Invalid selection.")
+                sleep(1)
+            end
         end
     end
 end
