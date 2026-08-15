@@ -385,7 +385,7 @@ local resourceType = normalizeResourceName(config.resourceType)
 local paused = false
 local noResource = false
 local noRequestSince = os.clock()
-local lastResourceCheck = 0
+local lastCapacityCheck = os.clock()
 local logs = {}
 local MAX_LOGS = 15
 local currentStatus = "STARTING"
@@ -616,8 +616,8 @@ while true do
         end
     end
 
-    if noResource and os.clock() - lastResourceCheck >= 5 then
-        lastResourceCheck = os.clock()
+    if currentStatus ~= "NO REQUEST" and noResource and os.clock() - lastCapacityCheck >= 5 then
+        lastCapacityCheck = os.clock()
         if isFull() then
             noResource = false
             paused = false
@@ -628,12 +628,10 @@ while true do
         end
     end
 
-    if os.clock() - noRequestSince >= 60 then
-        if currentStatus ~= "NO REQUEST" then
-            stationSetName(requestName)
-            setStatus("NO REQUEST")
-            addLog("TIMEOUT 60s -> " .. requestName)
-        end
+    if currentStatus ~= "NO REQUEST" and os.clock() - noRequestSince >= 60 then
+        stationSetName(requestName)
+        setStatus("NO REQUEST")
+        addLog("TIMEOUT 60s -> " .. requestName)
     end
 
     drawMonitor()
