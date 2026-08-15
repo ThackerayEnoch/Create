@@ -576,10 +576,21 @@ local function advancedState(station, entry, inventory, count, percent)
     return "disabled"
 end
 
-local function handleAdvancedMessage(message)
-    if not loadProtocol() then return end
-    if type(message) ~= "table" or message.protocol ~= protocol.PROTOCOL then return end
+local function handleAdvancedMessage(sender, message)
+    if not loadProtocol() then
+        log("RX ignored: protocol.lua unavailable")
+        return
+    end
+    if type(message) ~= "table" then
+        log("RX #" .. tostring(sender) .. " invalid message")
+        return
+    end
+    if message.protocol ~= protocol.PROTOCOL then
+        log("RX #" .. tostring(sender) .. " ignored protocol=" .. tostring(message.protocol))
+        return
+    end
     local resource = message.resourceType and normalizeResourceName(message.resourceType) or nil
+    log("RX #" .. tostring(sender) .. " " .. tostring(message.type) .. (resource and (" [" .. resource .. "]") or ""))
 
     if message.type == protocol.ALLOW_RENAME and resource then
         pausedByResource[resource] = false
@@ -588,7 +599,9 @@ local function handleAdvancedMessage(message)
                 if entry.advanced and normalizeResourceName(entry.resourceType or entry.item) == resource then
                     local station = findStation(entry)
                     if station and getStationName(station) == (entry.waitingName or ("WATTING_" .. (entry.requestName or ""))) then
-                        setStationName(station, entry.requestName or ((entry.resourceType or entry.item) .. "_Request_" .. (entry.factoryId or entry.id)))
+                        if setStationName(station, entry.requestName or ((entry.resourceType or entry.item) .. "_Request_" .. (entry.factoryId or entry.id))) then
+                            log("ALLOW_RENAME applied -> " .. tostring(entry.requestName or ""))
+                        end
                     end
                 end
             end
@@ -626,16 +639,19 @@ local function handleAdvancedMessage(message)
 end
 
 local function advancedEventLoop()
-    if not openRednet() then return end
+    if not openRednet() then
+        log("ADVANCED RX LOOP FAILED: wireless modem_x unavailable")
+        return
+    end
+
     while true do
-        local event = { os.pullEvent() }
-        if event[1] == "rednet_message" then
-            local sender, message, protocolName = event[2], event[3], event[4]
+        local sender, message, protocolName = rednet.receive(nil, 1)
+        if sender ~= nil then
             if protocolName == protocol.PROTOCOL then
-                handleAdvancedMessage(message)
+                handleAdvancedMessage(sender, message)
+            else
+                log("RX #" .. tostring(sender) .. " ignored protocol=" .. tostring(protocolName))
             end
-        elseif event[1] == "timer" then
-            -- timers are handled by the main loop; ignored here
         end
     end
 end
@@ -750,6 +766,9 @@ local function drawStatusText(monitor, x, y, state)
     if state == "disabled" then
         label = "DISABLE"
         colour = colors.red
+    elseif state == "waiting" then
+        label = "WAITING"
+        colour = colors.yellow
     elseif state == "error" then
         label = "ERROR"
         colour = colors.orange
@@ -933,6 +952,7 @@ local function drawDashboard(monitor, rows)
         --
         -- ENABLE = green
         -- DISABLE = red
+        -- WAITING = yellow
         --------------------------------------------------
 
         drawStatusText(
