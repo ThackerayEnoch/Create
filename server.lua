@@ -553,7 +553,22 @@ while true do
             else
                 paused = false
                 setStatus("AVAILABLE")
+                -- Keep the required broadcast, and additionally reply directly to
+                -- the requesting client. The payload remains source/destination-free.
                 broadcast(protocol.ALLOW_RENAME)
+                local allowMessage = {
+                    protocol = protocol.PROTOCOL,
+                    type = protocol.ALLOW_RENAME,
+                    resourceType = resourceType
+                }
+                local directOk, directErr = pcall(function()
+                    rednet.send(sender, allowMessage, protocol.PROTOCOL)
+                end)
+                if directOk then
+                    addLog("TX DIRECT ALLOW_RENAME -> #" .. tostring(sender) .. " [" .. resourceType .. "]")
+                else
+                    addLog("ERROR TX DIRECT ALLOW_RENAME -> #" .. tostring(sender) .. ": " .. tostring(directErr))
+                end
                 stationSetName(supplyName)
             end
 

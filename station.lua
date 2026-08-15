@@ -648,6 +648,7 @@ local function advancedEventLoop()
         local sender, message, protocolName = rednet.receive(nil, 1)
         if sender ~= nil then
             if protocolName == protocol.PROTOCOL then
+                log("RX REDNET #" .. tostring(sender) .. " protocol=" .. tostring(protocolName))
                 handleAdvancedMessage(sender, message)
             else
                 log("RX #" .. tostring(sender) .. " ignored protocol=" .. tostring(protocolName))
