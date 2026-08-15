@@ -638,24 +638,24 @@ local function handleAdvancedMessage(sender, message)
     end
 end
 
-local function advancedEventLoop()
-    if not openRednet() then
-        log("ADVANCED RX LOOP FAILED: wireless modem_x unavailable")
+local function handleRednetEvent(sender, message, protocolName)
+    if protocolName == nil then
+        log("RX REDNET #" .. tostring(sender) .. " protocol=nil")
         return
     end
 
-    while true do
-        local sender, message, protocolName = rednet.receive(nil, 1)
-        if sender ~= nil then
-            if protocolName == protocol.PROTOCOL then
-                log("RX REDNET #" .. tostring(sender) .. " protocol=" .. tostring(protocolName))
-                handleAdvancedMessage(sender, message)
-            else
-                log("RX #" .. tostring(sender) .. " ignored protocol=" .. tostring(protocolName))
-            end
-        end
+    if protocolName ~= protocol.PROTOCOL then
+        log("RX #" .. tostring(sender) .. " ignored protocol=" .. tostring(protocolName))
+        return
+    end
+
+    log("RX REDNET #" .. tostring(sender) .. " protocol=" .. tostring(protocolName))
+    local ok, err = pcall(handleAdvancedMessage, sender, message)
+    if not ok then
+        log("RX HANDLER ERROR #" .. tostring(sender) .. ": " .. tostring(err))
     end
 end
+
 
 --------------------------------------------------
 -- Monitor drawing API
@@ -1147,8 +1147,7 @@ if config.advancedNetwork then
     discoverServers()
 end
 
-local function controllerLoop()
-while true do
+local function controllerTick()
     local rows = {}
 
     for i, entry in ipairs(config.stations) do
@@ -1178,6 +1177,7 @@ while true do
             else
                 local percent = getPercentage(count, entry.capacity)
                 local state
+
                 if entry.advanced then
                     local ok, result = pcall(advancedState, station, entry, inventory, count, percent)
                     if ok then
@@ -1213,13 +1213,32 @@ while true do
     if monitor then
         drawDashboard(monitor, rows)
     end
-
-    sleep(config.checkInterval)
-end
 end
 
-if config.advancedNetwork then
-    parallel.waitForAny(controllerLoop, advancedEventLoop)
-else
-    controllerLoop()
+-- Run one tick immediately, then use a single event loop for BOTH periodic
+-- controller work and rednet messages. This guarantees that no second
+-- rednet.receive() coroutine can consume or race with ALLOW_RENAME.
+controllerTick()
+
+if not config.advancedNetwork then
+    while true do
+        sleep(config.checkInterval)
+        controllerTick()
+    end
+end
+
+local controllerTimer = os.startTimer(config.checkInterval)
+while true do
+    local event, a, b, c = os.pullEvent()
+
+    if event == "rednet_message" then
+        handleRednetEvent(a, b, c)
+
+    elseif event == "timer" and a == controllerTimer then
+        local ok, err = pcall(controllerTick)
+        if not ok then
+            log("CONTROLLER TICK ERROR: " .. tostring(err))
+        end
+        controllerTimer = os.startTimer(config.checkInterval)
+    end
 end

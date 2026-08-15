@@ -561,13 +561,13 @@ while true do
                     type = protocol.ALLOW_RENAME,
                     resourceType = resourceType
                 }
-                local directOk, directErr = pcall(function()
-                    rednet.send(sender, allowMessage, protocol.PROTOCOL)
+                local directOk, directResultOrErr = pcall(function()
+                    return rednet.send(sender, allowMessage, protocol.PROTOCOL)
                 end)
                 if directOk then
-                    addLog("TX DIRECT ALLOW_RENAME -> #" .. tostring(sender) .. " [" .. resourceType .. "]")
+                    addLog("TX DIRECT ALLOW_RENAME -> #" .. tostring(sender) .. " [" .. resourceType .. "] result=" .. tostring(directResultOrErr))
                 else
-                    addLog("ERROR TX DIRECT ALLOW_RENAME -> #" .. tostring(sender) .. ": " .. tostring(directErr))
+                    addLog("ERROR TX DIRECT ALLOW_RENAME -> #" .. tostring(sender) .. ": " .. tostring(directResultOrErr))
                 end
                 stationSetName(supplyName)
             end
