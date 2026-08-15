@@ -1241,14 +1241,15 @@ local function networkLoop()
     log("Network listener started on " .. tostring(modemSide))
 
     while true do
-        -- No timeout: this coroutine is dedicated exclusively to Rednet RX.
-        -- It is always waiting for the next network packet.
+        if not openRednet() then
+            sleep(1)
+        end
+
+        -- Use the protocol filter here so the station only processes packets for
+        -- this controller; raw rednet.receive() can easily hide matching traffic
+        -- behind unrelated modem packets or protocol mismatches.
         local ok, sender, message = pcall(function()
-            -- Receive ALL Rednet messages first.
-            -- Do not use the protocol filter here: installation proved that
-            -- the modem can receive Rednet traffic, and this lets us diagnose
-            -- any protocol-channel/filter mismatch explicitly.
-            return rednet.receive()
+            return rednet.receive(protocol.PROTOCOL, 1)
         end)
 
         if not ok then
@@ -1259,12 +1260,10 @@ local function networkLoop()
             openRednet()
         elseif sender ~= nil then
             local actualProtocol = type(message) == "table" and message.protocol or nil
-            log("RX ANY #" .. tostring(sender) ..
+            log("RX #" .. tostring(sender) ..
                 " protocol=" .. tostring(actualProtocol) ..
                 " expected=" .. tostring(protocol and protocol.PROTOCOL))
 
-            -- Keep the RX coroutine alive even if one malformed packet or
-            -- one station-name update causes an exception.
             local handlerOk, handlerErr = pcall(function()
                 handleAdvancedMessage(sender, message)
             end)
