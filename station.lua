@@ -14,6 +14,113 @@
 ]]
 
 local CONFIG_PATH = "/config.lua"
+local PROTOCOL_PATH = "/protocol.lua"
+
+local protocol = nil
+
+local function loadProtocol()
+    if protocol then return protocol end
+    if not fs.exists(PROTOCOL_PATH) then return nil end
+    local ok, result = pcall(dofile, PROTOCOL_PATH)
+    if ok and type(result) == "table" then
+        protocol = result
+        return protocol
+    end
+    return nil
+end
+
+local rednetOpened = false
+local serverByResource = {}
+local pausedByResource = {}
+local lastRequestAt = {}
+local runtimeConfig = nil
+local helloInterval = 30
+local discoveryWindow = 3
+local modemSide = nil
+
+local function findModem()
+    for _, name in ipairs(peripheral.getNames()) do
+        if peripheral.getType(name) == "modem" then
+            return name
+        end
+    end
+    return nil
+end
+
+local function openRednet()
+    if not loadProtocol() then return false end
+    if rednetOpened then return true end
+    modemSide = findModem()
+    if not modemSide then return false end
+    if not rednet.isOpen(modemSide) then
+        rednet.open(modemSide)
+    end
+    rednetOpened = true
+    return true
+end
+
+local function broadcastMessage(messageType, resourceType, extra)
+    if not openRednet() then return false end
+    local msg = { protocol = protocol.PROTOCOL, type = messageType }
+    if resourceType ~= nil then msg.resourceType = resourceType end
+    if type(extra) == "table" then
+        for k, v in pairs(extra) do msg[k] = v end
+    end
+    return rednet.broadcast(msg, protocol.PROTOCOL)
+end
+
+local function discoverServers()
+    if not openRednet() then return end
+    broadcastMessage(protocol.HELLO)
+    local deadline = os.clock() + discoveryWindow
+    while os.clock() < deadline do
+        local timeout = math.max(0.05, deadline - os.clock())
+        local sender, message = rednet.receive(protocol.PROTOCOL, timeout)
+        if not sender then break end
+        if type(message) == "table" and message.type == protocol.ANSWER and message.resourceType then
+            if serverByResource[message.resourceType] == nil then
+                serverByResource[message.resourceType] = sender
+            end
+        end
+    end
+end
+
+local function requestRename(resourceType)
+    broadcastMessage(protocol.REQUEST_RENAME, resourceType)
+    lastRequestAt[resourceType] = os.clock()
+end
+
+local function getResourceCount(device, resourceType, isFluid)
+    if not device then return nil end
+    if isFluid then
+        local ok, tanks = pcall(function() return device.tanks() end)
+        if not ok or type(tanks) ~= "table" then return nil end
+        local total = 0
+        for _, tank in pairs(tanks) do
+            if tank and tank.name == resourceType then total = total + (tank.amount or 0) end
+        end
+        return total
+    end
+    local ok, items = pcall(function() return device.list() end)
+    if not ok or type(items) ~= "table" then return nil end
+    local total = 0
+    for _, item in pairs(items) do
+        if item and item.name == resourceType then total = total + (item.count or 0) end
+    end
+    return total
+end
+
+local function trainStorageForStation(entry)
+    local names = {}
+    if entry.trainStoragePeripheral then table.insert(names, entry.trainStoragePeripheral) end
+    for _, name in ipairs(names) do
+        if peripheral.isPresent(name) then
+            local p = peripheral.wrap(name)
+            if p then return p end
+        end
+    end
+    return nil
+end
 
 --------------------------------------------------
 -- Utilities
@@ -67,6 +174,15 @@ end
 -- Peripheral lookup
 --------------------------------------------------
 
+local function isManagedStationName(entry, name)
+    if name == entry.stationName or name == entry.disabledName then return true end
+    if not entry.advanced then return false end
+    return name == entry.requestName
+        or name == entry.waitingName
+        or name == entry.advancedDisabledName
+        or name == entry.supplyName
+end
+
 local function findStation(entry)
     -- Fast path: current peripheral name still exists and has the right type.
     if entry.physicalStation
@@ -79,7 +195,7 @@ local function findStation(entry)
                 return station.getStationName()
             end)
 
-            if ok and (name == entry.stationName or name == entry.disabledName) then
+            if ok and isManagedStationName(entry, name) then
                 return station
             end
         end
@@ -94,7 +210,7 @@ local function findStation(entry)
                     return station.getStationName()
                 end)
 
-                if ok and (name == entry.stationName or name == entry.disabledName) then
+                if ok and isManagedStationName(entry, name) then
                     entry.physicalStation = peripheralName
                     return station
                 end
@@ -252,6 +368,135 @@ local function updateStationState(station, entry, percent)
     end
 
     return "error"
+end
+
+--------------------------------------------------
+-- Advanced CLIENT_SERVER demand controller
+--------------------------------------------------
+
+local function advancedNames(entry)
+    local resource = entry.resourceType or entry.item
+    local requestName = entry.requestName or (resource .. "_Request_" .. (entry.factoryId or entry.id or "Factory"))
+    return requestName,
+        entry.waitingName or ("WATTING_" .. requestName),
+        entry.advancedDisabledName or ("DISABLE_" .. requestName)
+end
+
+local function setAdvancedName(station, entry, name)
+    return setStationName(station, name)
+end
+
+local function advancedState(station, entry, inventory, count, percent)
+    local resource = entry.resourceType or entry.item
+    local requestName, waitingName, disabledName = advancedNames(entry)
+    local current = getStationName(station)
+    local paused = pausedByResource[resource] == true
+
+    -- Keep the original threshold controller as the demand decision source.
+    local needs = percent < (entry.enablePercent or 20)
+    local full = percent >= (entry.disablePercent or 80)
+
+    if full then
+        if current ~= disabledName then setAdvancedName(station, entry, disabledName) end
+        return "disabled"
+    end
+
+    if needs then
+        if current ~= waitingName and current ~= requestName then
+            setAdvancedName(station, entry, waitingName)
+            current = waitingName
+        end
+        if current == requestName then
+            -- An ENABLE station which is still below the threshold is already participating.
+        elseif not paused and (not lastRequestAt[resource] or os.clock() - lastRequestAt[resource] >= 5) then
+            requestRename(resource)
+        end
+    elseif current == disabledName then
+        -- Hysteresis: once blocked, remain blocked until below the enable threshold.
+        return "disabled"
+    elseif current ~= requestName and current ~= waitingName then
+        setAdvancedName(station, entry, requestName)
+    end
+
+    -- When a train is physically present, the portable storage interface is the
+    -- authoritative view of the train's current load.
+    if current == requestName or current == waitingName then
+        local trainStorage = trainStorageForStation(entry)
+        if trainStorage then
+            local trainCount = getResourceCount(trainStorage, resource, entry.resourceKind == "fluid")
+            if trainCount ~= nil and trainCount <= 0 then
+                broadcastMessage(protocol.NO_RESOURCE, resource)
+            end
+        end
+    end
+
+    if paused then return "waiting" end
+    if current == waitingName then return "waiting" end
+    if current == requestName then return "enabled" end
+    return "disabled"
+end
+
+local function handleAdvancedMessage(message)
+    if type(message) ~= "table" or message.protocol ~= protocol.PROTOCOL then return end
+    local resource = message.resourceType
+
+    if message.type == protocol.ALLOW_RENAME and resource then
+        pausedByResource[resource] = false
+        if runtimeConfig then
+            for _, entry in ipairs(runtimeConfig.stations or {}) do
+                if entry.advanced and (entry.resourceType or entry.item) == resource then
+                    local station = findStation(entry)
+                    if station and getStationName(station) == (entry.waitingName or ("WATTING_" .. (entry.requestName or ""))) then
+                        setStationName(station, entry.requestName or ((entry.resourceType or entry.item) .. "_Request_" .. (entry.factoryId or entry.id)))
+                    end
+                end
+            end
+        end
+        return
+    end
+
+    if message.type == protocol.PAUSE and resource then
+        pausedByResource[resource] = true
+        return
+    end
+
+    if message.type == protocol.ENABLE and resource then
+        pausedByResource[resource] = false
+        if runtimeConfig then
+            for _, entry in ipairs(runtimeConfig.stations or {}) do
+                if entry.advanced and (entry.resourceType or entry.item) == resource then
+                    local station = findStation(entry)
+                    if station then
+                        local current = getStationName(station)
+                        local waitingName = entry.waitingName or ("WATTING_" .. (entry.requestName or ""))
+                        if current == waitingName then
+                            setStationName(station, entry.requestName or ((entry.resourceType or entry.item) .. "_Request_" .. (entry.factoryId or entry.id)))
+                        end
+                    end
+                end
+            end
+        end
+        return
+    end
+
+    if message.type == protocol.ANSWER and resource then
+        return
+    end
+end
+
+local function advancedEventLoop()
+    if not openRednet() then return end
+    while true do
+        local event = { os.pullEvent() }
+        if event[1] == "rednet_message" then
+            local sender, message, protocolName = event[2], event[3], event[4]
+            if protocolName == protocol.PROTOCOL then
+                handleAdvancedMessage(message)
+            end
+        elseif event[1] == "timer" then
+            -- timers are handled by the main loop; ignored here
+        end
+    end
 end
 
 --------------------------------------------------
@@ -674,6 +919,7 @@ end
 --------------------------------------------------
 
 local config = loadConfig()
+runtimeConfig = config
 local monitor = getMonitor()
 
 term.clear()
@@ -686,6 +932,12 @@ print()
 print("Stations: " .. tostring(#config.stations))
 print()
 
+if config.advancedNetwork then
+    openRednet()
+    discoverServers()
+end
+
+local function controllerLoop()
 while true do
     local rows = {}
 
@@ -715,7 +967,12 @@ while true do
                 log("[" .. i .. "] Failed to read inventory: " .. entry.inventoryPeripheral)
             else
                 local percent = getPercentage(count, entry.capacity)
-                local state = updateStationState(station, entry, percent)
+                local state
+                if entry.advanced then
+                    state = advancedState(station, entry, inventory, count, percent)
+                else
+                    state = updateStationState(station, entry, percent)
+                end
 
                 row.count = count
                 row.percent = percent
@@ -742,4 +999,11 @@ while true do
     end
 
     sleep(config.checkInterval)
+end
+end
+
+if config.advancedNetwork then
+    parallel.waitForAny(controllerLoop, advancedEventLoop)
+else
+    controllerLoop()
 end

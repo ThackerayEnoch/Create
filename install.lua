@@ -16,12 +16,15 @@
       3. Update one station
       4. Add one station
       5. Delete one station
-      6. Exit
+      6. Install advanced supply server
+      7. Exit
 ]]
 
 local CONFIG_PATH = "/config.lua"
 local INSTALL_PATH = "/install.lua"
 local STATION_PROGRAM_PATH = "/station.lua"
+local SERVER_PROGRAM_PATH = "/server.lua"
+local PROTOCOL_PATH = "/protocol.lua"
 
 --------------------------------------------------
 -- Basic utilities
@@ -154,7 +157,17 @@ local function writeConfig(config)
         file.writeLine("            item = " .. luaString(station.item) .. ",")
         file.writeLine("            capacity = " .. tostring(station.capacity) .. ",")
         file.writeLine("            enablePercent = " .. tostring(station.enablePercent) .. ",")
-        file.writeLine("            disablePercent = " .. tostring(station.disablePercent))
+        file.writeLine("            disablePercent = " .. tostring(station.disablePercent) .. ",")
+        file.writeLine("            advanced = " .. tostring(station.advanced == true) .. ",")
+        file.writeLine("            resourceType = " .. luaString(station.resourceType or station.item) .. ",")
+        file.writeLine("            resourceKind = " .. luaString(station.resourceKind or "item") .. ",")
+        file.writeLine("            factoryId = " .. luaString(station.factoryId or station.id) .. ",")
+        file.writeLine("            requestName = " .. luaString(station.requestName or station.stationName) .. ",")
+        file.writeLine("            waitingName = " .. luaString(station.waitingName or ("WATTING_" .. (station.requestName or station.stationName))) .. ",")
+        file.writeLine("            advancedDisabledName = " .. luaString(station.advancedDisabledName or ("DISABLE_" .. (station.requestName or station.stationName))) .. ",")
+        file.writeLine("            supplyName = " .. luaString(station.supplyName or ((station.resourceType or station.item) .. "_Supply")) .. ",")
+        file.writeLine("            serverId = " .. tostring(tonumber(station.serverId) or 0) .. ",")
+        file.writeLine("            trainStoragePeripheral = " .. luaString(station.trainStoragePeripheral or ""))
         file.writeLine("        }" .. (i < #config.stations and "," or ""))
     end
 
@@ -241,7 +254,9 @@ end
 local function stationNameUsed(config, name, excludedIndex)
     for i, station in ipairs(config.stations or {}) do
         if i ~= excludedIndex then
-            if station.stationName == name or station.disabledName == name then
+            if station.stationName == name or station.disabledName == name
+                or station.requestName == name or station.waitingName == name
+                or station.advancedDisabledName == name or station.supplyName == name then
                 return true, station
             end
         end
@@ -485,6 +500,175 @@ local function selectItem(inventory)
 end
 
 --------------------------------------------------
+-- Advanced CLIENT_SERVER setup helpers
+--------------------------------------------------
+
+local function loadProtocol()
+    if not fs.exists("/disk/protocol.lua") then
+        error("protocol.lua is missing from the floppy disk.")
+    end
+    return dofile("/disk/protocol.lua")
+end
+
+local function openRednetForInstall()
+    local modem
+    for _, name in ipairs(peripheral.getNames()) do
+        if peripheral.getType(name) == "modem" then modem = name; break end
+    end
+    if not modem then return nil end
+    if not rednet.isOpen(modem) then rednet.open(modem) end
+    return modem
+end
+
+local function discoverServersForResource(resourceType)
+    local protocol = loadProtocol()
+    local modem = openRednetForInstall()
+    if not modem then
+        print("No modem found; CLIENT_SERVER discovery cannot continue.")
+        return {}
+    end
+
+    rednet.broadcast({protocol=protocol.PROTOCOL, type=protocol.HELLO}, protocol.PROTOCOL)
+    local deadline = os.clock() + 3
+    local found = {}
+    local seen = {}
+    while os.clock() < deadline do
+        local sender, message = rednet.receive(protocol.PROTOCOL, math.max(0.05, deadline-os.clock()))
+        if not sender then break end
+        if type(message) == "table" and message.type == protocol.ANSWER and message.resourceType == resourceType and not seen[sender] then
+            seen[sender] = true
+            table.insert(found, sender)
+        end
+    end
+    table.sort(found)
+    return found
+end
+
+local function selectServerForResource(resourceType)
+    local servers = discoverServersForResource(resourceType)
+    clearScreen()
+    print("========================================")
+    print("        Center Server Selection")
+    print("========================================")
+    print()
+    print("Resource: " .. resourceType)
+    print()
+    if #servers == 0 then
+        print("No matching center server answered HELLO.")
+        pause()
+        return nil
+    end
+    for i, id in ipairs(servers) do print("["..i.."] Computer ID "..id) end
+    while true do
+        local n=tonumber(ask("Select center server",1))
+        if n and servers[n] then return servers[n] end
+        print("Invalid selection.")
+    end
+end
+
+local function storageSupportsItems(p)
+    return pcall(function() return p.list() end)
+end
+
+local function storageSupportsFluids(p)
+    return pcall(function() return p.tanks() end)
+end
+
+local function scanTrainStorages()
+    local result={}
+    for _, name in ipairs(peripheral.getNames()) do
+        local p=peripheral.wrap(name)
+        if p then
+            local itemOK=storageSupportsItems(p)
+            local fluidOK=storageSupportsFluids(p)
+            if itemOK or fluidOK then
+                table.insert(result,{peripheralName=name, peripheral=p, kind=itemOK and "item" or "fluid"})
+            end
+        end
+    end
+    table.sort(result,function(a,b) return a.peripheralName<b.peripheralName end)
+    return result
+end
+
+local function selectTrainStorage(resourceKind)
+    while true do
+        clearScreen()
+        print("========================================")
+        print("          Train Container Selection")
+        print("========================================")
+        print()
+        print("Select the peripheral exposed by the portable storage interface.")
+        print("The train must currently be connected to the interface.")
+        print()
+        local list=scanTrainStorages()
+        local visible={}
+        for _,x in ipairs(list) do
+            if not resourceKind or x.kind==resourceKind then table.insert(visible,x) end
+        end
+        for i,x in ipairs(visible) do print("["..i.."] "..x.peripheralName.."  type="..x.kind) end
+        if #visible==0 then
+            print("No matching item/fluid storage peripheral found.")
+            print("For fluids, ensure the portable interface exposes tanks().")
+            pause()
+        else
+            local n=tonumber(ask("Select train container"))
+            if n and visible[n] then return visible[n] end
+        end
+    end
+end
+
+local function configureAdvancedStations(config)
+    clearScreen()
+    print("========================================")
+    print("       CLIENT_SERVER Configuration")
+    print("========================================")
+    print()
+    print("The installer will discover all center servers with HELLO/ANSWER,")
+    print("then bind a currently connected train container for each station.")
+    print()
+
+    for i, station in ipairs(config.stations) do
+        clearScreen()
+        print("Station "..i.."/"..#config.stations)
+        print("Station: "..station.stationName)
+        print("Item:    "..station.item)
+        print()
+        local resourceType=ask("Resource type",station.item)
+        local resourceKind=ask("Resource kind (item/fluid)","item")
+        if resourceKind~="item" and resourceKind~="fluid" then resourceKind="item" end
+        local factoryId=ask("Factory identifier",station.id)
+        local requestName=resourceType.."_Request_"..factoryId
+        local waitingName="WATTING_"..requestName
+        local disabledName="DISABLE_"..requestName
+        local supplyName=resourceType.."_Supply"
+        local serverId=selectServerForResource(resourceType)
+        if not serverId then return false end
+        local trainStorage=selectTrainStorage(resourceKind)
+
+        station.advanced=true
+        station.resourceType=resourceType
+        station.resourceKind=resourceKind
+        station.factoryId=factoryId
+        station.requestName=requestName
+        station.waitingName=waitingName
+        station.advancedDisabledName=disabledName
+        station.supplyName=supplyName
+        station.serverId=serverId
+        station.trainStoragePeripheral=trainStorage.peripheralName
+        station.stationName=requestName
+        station.disabledName=disabledName
+
+        local physical=peripheral.wrap(station.physicalStation)
+        if physical then
+            pcall(function() physical.setStationName(requestName) end)
+        end
+    end
+    config.advancedNetwork=true
+    config.networkMode="CLIENT_SERVER"
+    return true
+end
+
+--------------------------------------------------
 -- Station capacity / thresholds
 --------------------------------------------------
 
@@ -606,6 +790,10 @@ local function installStationProgram()
 
     fs.delete(STATION_PROGRAM_PATH)
     fs.copy("/disk/station.lua", STATION_PROGRAM_PATH)
+    if fs.exists("/disk/protocol.lua") then
+        fs.delete(PROTOCOL_PATH)
+        fs.copy("/disk/protocol.lua", PROTOCOL_PATH)
+    end
 end
 
 local function installInstallerProgram()
@@ -615,6 +803,18 @@ local function installInstallerProgram()
 
     fs.delete(INSTALL_PATH)
     fs.copy("/disk/install.lua", INSTALL_PATH)
+end
+
+local function installServerProgram()
+    if not fs.exists("/disk/server.lua") then
+        error("server.lua is missing from the floppy disk.")
+    end
+    fs.delete(SERVER_PROGRAM_PATH)
+    fs.copy("/disk/server.lua", SERVER_PROGRAM_PATH)
+    if fs.exists("/disk/protocol.lua") then
+        fs.delete(PROTOCOL_PATH)
+        fs.copy("/disk/protocol.lua", PROTOCOL_PATH)
+    end
 end
 
 --------------------------------------------------
@@ -684,7 +884,8 @@ local function showStartupMenu(config)
     print("[3] Update one station")
     print("[4] Add one station")
     print("[5] Delete one station")
-    print("[6] Exit")
+    print("[6] Install advanced supply server")
+    print("[7] Exit")
     print()
     print("Default: Run controller in 5 seconds")
     write("Select mode: ")
@@ -788,6 +989,19 @@ local function installAll()
         pause()
     end
 
+    print()
+    local advanced = askYesNo("Enable CLIENT_SERVER mode?", "n")
+    if advanced then
+        if not configureAdvancedStations(config) then
+            print("CLIENT_SERVER configuration cancelled.")
+            pause()
+            return
+        end
+    else
+        config.advancedNetwork=false
+        config.networkMode="STANDALONE"
+    end
+
     if not askYesNo("Write this configuration to config.lua?", "y") then
         print("Installation cancelled.")
         return
@@ -840,6 +1054,15 @@ local function updateOne()
     local old = config.stations[index]
     local entry = bindStation(config, index)
 
+    if entry and old.advanced then
+        local advancedConfig = { stations = { entry } }
+        if not configureAdvancedStations(advancedConfig) then
+            print("Advanced station update cancelled.")
+            pause()
+            return
+        end
+    end
+
     if not entry then
         print("Update cancelled or failed.")
         pause()
@@ -885,6 +1108,10 @@ local function findPhysicalStationForEntry(entry)
             if ok and (
                 currentName == entry.stationName
                 or currentName == entry.disabledName
+                or currentName == entry.requestName
+                or currentName == entry.waitingName
+                or currentName == entry.advancedDisabledName
+                or currentName == entry.supplyName
             ) then
                 return station
             end
@@ -1027,6 +1254,15 @@ local function addOne()
 
     local entry = bindStation(config, nil)
 
+    if entry and config.advancedNetwork then
+        local advancedConfig = { stations = { entry } }
+        if not configureAdvancedStations(advancedConfig) then
+            print("Advanced station add cancelled.")
+            pause()
+            return
+        end
+    end
+
     if not entry then
         print("Add station cancelled or failed.")
         pause()
@@ -1126,6 +1362,15 @@ while true do
         deleteOne()
 
     elseif choice == "6" then
+        if fs.exists(SERVER_PROGRAM_PATH) or fs.exists("/disk/server.lua") then
+            if fs.exists("/disk/server.lua") then installServerProgram() end
+            shell.run(SERVER_PROGRAM_PATH, "install")
+        else
+            print("server.lua is missing from the floppy disk.")
+            pause()
+        end
+
+    elseif choice == "7" then
         break
 
     else
