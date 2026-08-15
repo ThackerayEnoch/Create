@@ -1,8 +1,7 @@
-Advanced Train Dispatch v13
+Advanced Train Dispatch v14
 
-CLIENT_SERVER mode now uses two parallel coroutines:
-- networkLoop(): dedicated rednet.receive() listener
-- tickLoop(): periodic peripheral/inventory/controller work
-
-This avoids losing rednet_message events while peripheral calls yield.
-STANDALONE mode keeps the legacy polling behavior.
+Key change:
+- station.lua runtime Rednet listener now uses rednet.receive() WITHOUT a protocol filter.
+- It logs RX ANY with the actual message.protocol and expected protocol.
+- It then manually validates message.protocol in handleAdvancedMessage().
+- This isolates Rednet protocol filtering from the client RX problem while preserving the original protocol payload.

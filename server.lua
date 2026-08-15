@@ -537,7 +537,9 @@ while true do
     if type(message) == "table" then
         local messageType = tostring(message.type or "UNKNOWN")
         local messageResource = message.resourceType and normalizeResourceName(message.resourceType) or nil
-        addLog("RX #" .. tostring(sender) .. " " .. messageType .. (messageResource and (" [" .. messageResource .. "]") or ""))
+        addLog("RX #" .. tostring(sender) .. " " .. messageType ..
+            (messageResource and (" [" .. messageResource .. "]") or "") ..
+            " protocol=" .. tostring(message.protocol))
 
         if messageType == protocol.HELLO then
             sendAnswer(sender)
