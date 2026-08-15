@@ -316,7 +316,7 @@ local function configureStationName(config, selectedStation, existingIndex)
                 -- it will later become DISABLE_<resource>_Request_<factory>.
                 local disabledName = existingIndex
                     and config.stations[existingIndex].disabledName
-                    or ("DISABLED_" .. stationName)
+                    or ("DISABLE_" .. stationName)
 
                 return stationName, disabledName
             end
@@ -771,7 +771,7 @@ local function configureAdvancedStations(config)
 
         local physical=peripheral.wrap(station.physicalStation)
         if physical then
-            pcall(function() physical.setStationName(requestName) end)
+            pcall(function() physical.setStationName(disabledName) end)
         end
     end
     config.advancedNetwork=true
@@ -1102,11 +1102,11 @@ local function installAll()
         local physical = peripheral.wrap(entry.physicalStation)
         if physical then
             local ok, err = pcall(function()
-                physical.setStationName(entry.stationName)
+                physical.setStationName(entry.disabledName)
             end)
 
             if not ok then
-                print("Failed to set station name: " .. tostring(err))
+                print("Failed to set initial disabled station name: " .. tostring(err))
                 pause()
                 return
             end
@@ -1114,7 +1114,8 @@ local function installAll()
 
         print()
         print("Station " .. i .. " configured successfully.")
-        print("Name: " .. entry.stationName)
+        print("Logical name: " .. entry.stationName)
+        print("Initial station name: " .. entry.disabledName)
         print("Item: " .. entry.item)
         pause()
     end
@@ -1200,6 +1201,18 @@ local function updateOne()
     end
 
     config.stations[index] = entry
+
+    local updatedPhysical = peripheral.wrap(entry.physicalStation)
+    if updatedPhysical then
+        local ok, err = pcall(function()
+            updatedPhysical.setStationName(entry.disabledName)
+        end)
+        if not ok then
+            print("Failed to set initial disabled station name: " .. tostring(err))
+            pause()
+            return
+        end
+    end
 
     if not askYesNo("Write this update to config.lua?", "y") then
         print("Update cancelled.")
@@ -1404,12 +1417,12 @@ local function addOne()
     local physical = peripheral.wrap(entry.physicalStation)
     if physical then
         local ok, err = pcall(function()
-            physical.setStationName(entry.stationName)
+            physical.setStationName(entry.disabledName)
         end)
 
         if not ok then
             table.remove(config.stations)
-            print("Failed to set station name: " .. tostring(err))
+            print("Failed to set initial disabled station name: " .. tostring(err))
             pause()
             return
         end
@@ -1438,7 +1451,8 @@ local function addOne()
 
     print()
     print("Station added successfully.")
-    print("Name: " .. entry.stationName)
+    print("Logical name: " .. entry.stationName)
+    print("Initial station name: " .. entry.disabledName)
     print("Item: " .. entry.item)
     print("Total stations: " .. tostring(#config.stations))
     pause()
