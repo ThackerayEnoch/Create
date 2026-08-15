@@ -202,11 +202,32 @@ local function requestRename(resourceType)
     return ok
 end
 
+local function readFluidTanks(device)
+    if not device then
+        return nil
+    end
+
+    local methods = { "tanks", "getTanks", "getFluids", "getFluid" }
+    for _, methodName in ipairs(methods) do
+        local fn = device[methodName]
+        if type(fn) == "function" then
+            local ok, result = pcall(function()
+                return fn(device)
+            end)
+            if ok and type(result) == "table" then
+                return result
+            end
+        end
+    end
+
+    return nil
+end
+
 local function getResourceCount(device, resourceType, isFluid)
     if not device then return nil end
     if isFluid then
-        local ok, tanks = pcall(function() return device.tanks() end)
-        if not ok or type(tanks) ~= "table" then return nil end
+        local tanks = readFluidTanks(device)
+        if type(tanks) ~= "table" then return nil end
         local total = 0
         for _, tank in pairs(tanks) do
             if tank and normalizeResourceName(tank.name) == resourceType then total = total + (tank.amount or 0) end

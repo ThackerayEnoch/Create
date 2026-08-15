@@ -707,12 +707,34 @@ local function selectServerForResource(resourceType)
     end
 end
 
+local function readFluidTanks(device)
+    if not device then
+        return nil
+    end
+
+    local methods = { "tanks", "getTanks", "getFluids", "getFluid" }
+    for _, methodName in ipairs(methods) do
+        local fn = device[methodName]
+        if type(fn) == "function" then
+            local ok, result = pcall(function()
+                return fn(device)
+            end)
+            if ok and type(result) == "table" then
+                return result
+            end
+        end
+    end
+
+    return nil
+end
+
 local function storageSupportsItems(p)
     return pcall(function() return p.list() end)
 end
 
 local function storageSupportsFluids(p)
-    return pcall(function() return p.tanks() end)
+    local ok, result = pcall(function() return readFluidTanks(p) end)
+    return ok and type(result) == "table"
 end
 
 local function scanTrainStorages()

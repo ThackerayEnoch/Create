@@ -49,6 +49,27 @@ local function normalizeResourceName(name)
     return name
 end
 
+local function readFluidTanks(device)
+    if not device then
+        return nil
+    end
+
+    local methods = { "tanks", "getTanks", "getFluids", "getFluid" }
+    for _, methodName in ipairs(methods) do
+        local fn = device[methodName]
+        if type(fn) == "function" then
+            local ok, result = pcall(function()
+                return fn(device)
+            end)
+            if ok and type(result) == "table" then
+                return result
+            end
+        end
+    end
+
+    return nil
+end
+
 local function findWirelessModem()
     for _, name in ipairs(peripheral.getNames()) do
         if name:match("^modem_%d+$") and peripheral.getType(name) == "modem" then
@@ -148,10 +169,13 @@ end
 local function deviceCapabilities(name)
     local peripheralObject = peripheral.wrap(name)
     if not peripheralObject then return nil end
-    local itemOK = pcall(function() peripheralObject.list() end)
-    local fluidOK = pcall(function() peripheralObject.tanks() end)
+
+    local itemOK = pcall(function() return peripheralObject.list() end)
     if itemOK then return "item", peripheralObject end
-    if fluidOK then return "fluid", peripheralObject end
+
+    local fluidTanks = readFluidTanks(peripheralObject)
+    if type(fluidTanks) == "table" then return "fluid", peripheralObject end
+
     return nil
 end
 
@@ -210,8 +234,8 @@ local function scanResourceNames(storage)
             end
         end
     else
-        local ok, tanks = pcall(function() return storage.peripheral.tanks() end)
-        if ok and type(tanks) == "table" then
+        local tanks = readFluidTanks(storage.peripheral)
+        if type(tanks) == "table" then
             for _, tank in pairs(tanks) do
                 if tank and tank.name then
                     local resource = normalizeResourceName(tank.name)
@@ -490,8 +514,8 @@ local function isFull()
     if not storage then return false end
 
     if config.resourceKind == "fluid" then
-        local ok, tanks = pcall(function() return storage.tanks() end)
-        if not ok or type(tanks) ~= "table" then return false end
+        local tanks = readFluidTanks(storage)
+        if type(tanks) ~= "table" then return false end
 
         local totalCapacity = 0
         local totalAmount = 0
