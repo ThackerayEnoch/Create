@@ -301,7 +301,7 @@ local function configureStationName(config, selectedStation, existingIndex)
         print()
 
         local defaultName = existingIndex and config.stations[existingIndex].stationName or ""
-        local stationName = ask("Official station name", defaultName)
+        local stationName = ask("Official station / factory name", defaultName)
 
         if stationName == "" then
             print("Station name cannot be empty.")
@@ -312,29 +312,13 @@ local function configureStationName(config, selectedStation, existingIndex)
                 print("Name conflict with: " .. tostring(conflict.stationName))
                 pause()
             else
-                local defaultDisabled = existingIndex
+                -- The disabled name is generated automatically.  In advanced mode
+                -- it will later become DISABLE_<resource>_Request_<factory>.
+                local disabledName = existingIndex
                     and config.stations[existingIndex].disabledName
                     or ("DISABLED_" .. stationName)
 
-                local disabledName = ask("Disabled station name", defaultDisabled)
-
-                if disabledName == "" or disabledName == stationName then
-                    print("Disabled name must be non-empty and different from the normal name.")
-                    pause()
-                else
-                    local disabledUsed, disabledConflict = stationNameUsed(
-                        config,
-                        disabledName,
-                        existingIndex
-                    )
-
-                    if disabledUsed then
-                        print("Disabled name conflicts with: " .. tostring(disabledConflict.stationName))
-                        pause()
-                    else
-                        return stationName, disabledName
-                    end
-                end
+                return stationName, disabledName
             end
         end
     end
@@ -763,7 +747,7 @@ local function configureAdvancedStations(config)
         local resourceType=normalizeResourceName(ask("Resource type",station.item))
         local resourceKind=ask("Resource kind (item/fluid)","item")
         if resourceKind~="item" and resourceKind~="fluid" then resourceKind="item" end
-        local factoryId=ask("Factory identifier",station.id)
+        local factoryId=ask("Factory identifier",station.stationName)
         local requestName=resourceType.."_Request_"..factoryId
         local waitingName="WATTING_"..requestName
         local disabledName="DISABLE_"..requestName

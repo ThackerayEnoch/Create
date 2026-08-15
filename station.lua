@@ -33,10 +33,20 @@ local rednetOpened = false
 local serverByResource = {}
 local pausedByResource = {}
 local lastRequestAt = {}
+local noResourceReported = {}
+local trainWasPresent = {}
 local runtimeConfig = nil
 local helloInterval = 30
 local discoveryWindow = 3
 local modemSide = nil
+
+--------------------------------------------------
+-- Utilities
+--------------------------------------------------
+
+local function log(message)
+    print(os.date("[%H:%M:%S] ") .. tostring(message))
+end
 
 local function normalizeResourceName(name)
     name = tostring(name or "")
@@ -154,23 +164,20 @@ local function getResourceCount(device, resourceType, isFluid)
 end
 
 local function trainStorageForStation(entry)
-    local names = {}
-    if entry.trainStoragePeripheral then table.insert(names, entry.trainStoragePeripheral) end
-    for _, name in ipairs(names) do
-        if peripheral.isPresent(name) then
-            local p = peripheral.wrap(name)
-            if p then return p end
-        end
+    if entry.trainStoragePeripheral and peripheral.isPresent(entry.trainStoragePeripheral) then
+        return peripheral.wrap(entry.trainStoragePeripheral)
     end
     return nil
 end
 
---------------------------------------------------
--- Utilities
---------------------------------------------------
-
-local function log(message)
-    print(os.date("[%H:%M:%S] ") .. tostring(message))
+local function isTrainPresent(station)
+    local ok, present = pcall(function()
+        return station.isTrainPresent()
+    end)
+    if not ok then
+        return false
+    end
+    return present == true
 end
 
 local function formatNumber(value)
@@ -461,14 +468,40 @@ local function advancedState(station, entry, inventory, count, percent)
         setAdvancedName(station, entry, requestName)
     end
 
-    -- When a train is physically present, the portable storage interface is the
-    -- authoritative view of the train's current load.
-    if current == requestName or current == waitingName then
+    -- NO_RESOURCE is only valid when a train is actually present at this
+    -- request station AND the bound portable-storage interface reports zero
+    -- of the requested resource.
+    --
+    -- Report once per train arrival to avoid broadcasting the same event every
+    -- controller tick while the train remains stopped.
+    local trainPresent = isTrainPresent(station)
+    local wasPresent = trainWasPresent[entry.id] == true
+
+    if trainPresent and not wasPresent then
+        noResourceReported[entry.id] = false
+    end
+    trainWasPresent[entry.id] = trainPresent
+
+    if trainPresent and (current == requestName or current == waitingName) then
         local trainStorage = trainStorageForStation(entry)
         if trainStorage then
-            local trainCount = getResourceCount(trainStorage, resource, entry.resourceKind == "fluid")
-            if trainCount ~= nil and trainCount <= 0 then
-                broadcastMessage(protocol.NO_RESOURCE, resource)
+            local trainCount = getResourceCount(
+                trainStorage,
+                resource,
+                entry.resourceKind == "fluid"
+            )
+
+            if trainCount ~= nil and trainCount <= 0 and not noResourceReported[entry.id] then
+                if loadProtocol() then
+                    if broadcastMessage(protocol.NO_RESOURCE, resource) then
+                        log("TX BROADCAST NO_RESOURCE [" .. resource .. "]")
+                        noResourceReported[entry.id] = true
+                    else
+                        log("FAILED TO BROADCAST NO_RESOURCE [" .. resource .. "]")
+                    end
+                else
+                    log("Cannot broadcast NO_RESOURCE: protocol.lua unavailable")
+                end
             end
         end
     end
@@ -1008,6 +1041,10 @@ local function selfCheck()
 end
 
 selfCheck()
+
+if config.advancedNetwork and not loadProtocol() then
+    error("Advanced CLIENT_SERVER mode requires a valid /protocol.lua")
+end
 
 term.clear()
 term.setCursorPos(1, 1)
