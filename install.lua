@@ -577,12 +577,12 @@ local function discoverServersForResource(resourceType)
         type = protocol.HELLO
     }
 
-    local sent, sendResult = pcall(function()
-        return rednet.broadcast(message, protocol.PROTOCOL)
+    local sent, sendError = pcall(function()
+        rednet.broadcast(message, protocol.PROTOCOL)
     end)
 
-    if not sent or not sendResult then
-        return nil, nil, "HELLO broadcast failed on " .. modem .. "."
+    if not sent then
+        return nil, nil, "HELLO broadcast failed on " .. modem .. ": " .. tostring(sendError)
     end
 
     print("HELLO sent. Waiting 5 seconds for ANSWER...")

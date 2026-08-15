@@ -77,7 +77,10 @@ local function broadcastMessage(messageType, resourceType, extra)
     if type(extra) == "table" then
         for k, v in pairs(extra) do msg[k] = v end
     end
-    return rednet.broadcast(msg, protocol.PROTOCOL)
+    local ok = pcall(function()
+        rednet.broadcast(msg, protocol.PROTOCOL)
+    end)
+    return ok
 end
 
 local function discoverServers()
@@ -86,15 +89,15 @@ local function discoverServers()
         return false
     end
 
-    local ok, result = pcall(function()
-        return rednet.broadcast(
+    local ok, err = pcall(function()
+        rednet.broadcast(
             { protocol = protocol.PROTOCOL, type = protocol.HELLO },
             protocol.PROTOCOL
         )
     end)
 
-    if not ok or not result then
-        log("SERVER DISCOVERY FAILED: HELLO broadcast failed")
+    if not ok then
+        log("SERVER DISCOVERY FAILED: HELLO broadcast failed: " .. tostring(err))
         return false
     end
 

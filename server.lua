@@ -442,14 +442,14 @@ local function broadcast(messageType)
         type = messageType,
         resourceType = resourceType
     }
-    local ok, result = pcall(function()
-        return rednet.broadcast(message, protocol.PROTOCOL)
+    local ok, err = pcall(function()
+        rednet.broadcast(message, protocol.PROTOCOL)
     end)
-    if ok and result then
+    if ok then
         addLog("TX BROADCAST " .. tostring(messageType) .. " [" .. resourceType .. "]")
         return true
     end
-    addLog("ERROR TX BROADCAST " .. tostring(messageType))
+    addLog("ERROR TX BROADCAST " .. tostring(messageType) .. ": " .. tostring(err))
     setStatus("ERROR")
     return false
 end
