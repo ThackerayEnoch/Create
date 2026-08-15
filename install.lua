@@ -165,9 +165,14 @@ local function writeConfig(config)
         error("Unable to create config.lua")
     end
 
+    local advancedNetwork = config.advancedNetwork == true
+    local networkMode = config.networkMode or (advancedNetwork and "CLIENT_SERVER" or "STANDALONE")
+
     file.writeLine("return {")
     file.writeLine("    version = 2,")
     file.writeLine("    checkInterval = " .. tostring(config.checkInterval or 5) .. ",")
+    file.writeLine("    advancedNetwork = " .. tostring(advancedNetwork) .. ",")
+    file.writeLine("    networkMode = " .. luaString(networkMode) .. ",")
     file.writeLine("    stations = {")
 
     for i, station in ipairs(config.stations) do

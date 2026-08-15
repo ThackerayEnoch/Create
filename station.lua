@@ -265,6 +265,21 @@ local function loadConfig()
     config.stations = config.stations or {}
     config.checkInterval = tonumber(config.checkInterval) or 5
 
+    if config.advancedNetwork == nil then
+        local hasAdvancedStation = false
+        for _, entry in ipairs(config.stations) do
+            if type(entry) == "table" and entry.advanced == true then
+                hasAdvancedStation = true
+                break
+            end
+        end
+        config.advancedNetwork = hasAdvancedStation
+    end
+
+    if config.networkMode == nil then
+        config.networkMode = config.advancedNetwork and "CLIENT_SERVER" or "STANDALONE"
+    end
+
     for i, entry in ipairs(config.stations) do
         if type(entry) ~= "table" then
             error("Invalid station entry at index " .. tostring(i))
@@ -1261,18 +1276,24 @@ local function networkLoop()
             rednet.receive(protocol.PROTOCOL)
 
         log(
-            "RX GOT | sender=" ..
+            "RX GOT sender=" ..
             tostring(sender) ..
-            " | protocol=" ..
-            tostring(protocolName) ..
-            " | type=" ..
-            tostring(type(message))
+            " protocol=" ..
+            tostring(protocolName)
         )
 
         if type(message) == "table" then
-            log("RX MESSAGE TYPE = " .. tostring(message.type))
+            log("RX TYPE=" .. tostring(message.type))
+
+            local ok, err = pcall(function()
+                handleAdvancedMessage(sender, message)
+            end)
+
+            if not ok then
+                log("HANDLER ERROR: " .. tostring(err))
+            end
         else
-            log("RX MESSAGE = " .. tostring(message))
+            log("RX MESSAGE NOT TABLE: " .. tostring(message))
         end
     end
 end
@@ -1296,6 +1317,16 @@ end
 -- Both loops are intentionally infinite. waitForAny is safe here because
 -- neither worker is expected to return during normal operation. More
 -- importantly, the network coroutine is independent from peripheral polling.
-parallel.waitForAny(networkLoop, tickLoop)
+log("========== BEFORE PARALLEL ==========")
+
+log("networkLoop = " .. tostring(networkLoop))
+log("tickLoop = " .. tostring(tickLoop))
+
+parallel.waitForAny(
+    networkLoop,
+    tickLoop
+)
+
+log("========== AFTER PARALLEL ==========")
 
 error("Advanced controller stopped unexpectedly")
