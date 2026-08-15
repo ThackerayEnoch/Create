@@ -97,6 +97,30 @@ local function normalizeResourceName(name)
     return name
 end
 
+local validRedstoneSides = { "front", "back", "left", "right", "top", "bottom" }
+
+local function normalizeRedstoneSide(side)
+    local value = tostring(side or "back"):lower()
+    for _, valid in ipairs(validRedstoneSides) do
+        if value == valid then
+            return valid
+        end
+    end
+    return "back"
+end
+
+local function askRedstoneSide(default)
+    while true do
+        local value = normalizeRedstoneSide(ask("Redstone pulse side", default or "back"))
+        for _, valid in ipairs(validRedstoneSides) do
+            if value == valid then
+                return value
+            end
+        end
+        print("Invalid side. Use front, back, left, right, top or bottom.")
+    end
+end
+
 local function findWirelessModem()
     for _, name in ipairs(peripheral.getNames()) do
         if name:match("^modem_%d+$") and peripheral.getType(name) == "modem" then
@@ -187,6 +211,7 @@ local function writeConfig(config)
         file.writeLine("            capacity = " .. tostring(station.capacity) .. ",")
         file.writeLine("            enablePercent = " .. tostring(station.enablePercent) .. ",")
         file.writeLine("            disablePercent = " .. tostring(station.disablePercent) .. ",")
+        file.writeLine("            redstoneSide = " .. luaString(station.redstoneSide or "back") .. ",")
         file.writeLine("            advanced = " .. tostring(station.advanced == true) .. ",")
         file.writeLine("            resourceType = " .. luaString(station.resourceType or station.item) .. ",")
         file.writeLine("            resourceKind = " .. luaString(station.resourceKind or "item") .. ",")
@@ -771,6 +796,7 @@ local function configureAdvancedStations(config)
         station.supplyName=supplyName
         station.serverId=serverId
         station.trainStoragePeripheral=trainStorage.peripheralName
+        station.redstoneSide = askRedstoneSide(station.redstoneSide or "back")
         station.stationName=requestName
         station.disabledName=disabledName
 
@@ -879,6 +905,8 @@ local function bindStation(config, existingIndex)
         return nil
     end
 
+    local redstoneSide = askRedstoneSide(existing and existing.redstoneSide or "back")
+
     local entry = {
         id = existing and existing.id or ("station_" .. tostring(#config.stations + 1)),
         physicalStation = selectedStation.peripheralName,
@@ -889,7 +917,8 @@ local function bindStation(config, existingIndex)
         item = selectedItem,
         capacity = settings.capacity,
         enablePercent = settings.enablePercent,
-        disablePercent = settings.disablePercent
+        disablePercent = settings.disablePercent,
+        redstoneSide = redstoneSide
     }
 
     return entry

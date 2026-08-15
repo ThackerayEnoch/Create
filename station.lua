@@ -289,6 +289,10 @@ local function loadConfig()
         -- Older configurations may not have physicalStation.
         -- The station can still be recovered by its logical stationName.
         entry.physicalStation = entry.physicalStation or nil
+        entry.redstoneSide = tostring(entry.redstoneSide or "back"):lower()
+        if entry.redstoneSide ~= "front" and entry.redstoneSide ~= "back" and entry.redstoneSide ~= "left" and entry.redstoneSide ~= "right" and entry.redstoneSide ~= "top" and entry.redstoneSide ~= "bottom" then
+            entry.redstoneSide = "back"
+        end
     end
 
     return config
