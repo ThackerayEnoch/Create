@@ -431,7 +431,7 @@ local function scanInventories()
 end
 
 local function selectInventory(excludedPeripheralName)
-    local pageSize = 10
+    local pageSize = 2
     local page = 1
 
     while true do
@@ -486,10 +486,20 @@ local function selectInventory(excludedPeripheralName)
 
             if input == "q" then
                 return nil
-            elseif input == "n" and page < totalPages then
-                page = page + 1
-            elseif input == "p" and page > 1 then
-                page = page - 1
+            elseif input == "n" then
+                if page < totalPages then
+                    page = page + 1
+                else
+                    print("Already on the last page.")
+                    sleep(1)
+                end
+            elseif input == "p" then
+                if page > 1 then
+                    page = page - 1
+                else
+                    print("Already on the first page.")
+                    sleep(1)
+                end
             else
                 local choice = tonumber(input)
                 if choice and visible[startIndex + choice - 1] then
@@ -548,7 +558,7 @@ local function selectItem(inventory)
         return nil
     end
 
-    local pageSize = 20
+    local pageSize = 2
     local page = 1
     local totalPages = math.ceil(#items / pageSize)
 
@@ -583,10 +593,20 @@ local function selectItem(inventory)
 
         if input == "q" then
             return nil
-        elseif input == "n" and page < totalPages then
-            page = page + 1
-        elseif input == "p" and page > 1 then
-            page = page - 1
+        elseif input == "n" then
+            if page < totalPages then
+                page = page + 1
+            else
+                print("Already on the last page.")
+                sleep(1)
+            end
+        elseif input == "p" then
+            if page > 1 then
+                page = page - 1
+            else
+                print("Already on the first page.")
+                sleep(1)
+            end
         else
             local choice = tonumber(input)
             if choice and choice >= 1 and choice <= (endIndex - startIndex + 1) then
@@ -795,7 +815,7 @@ local function scanTrainStorages()
 end
 
 local function selectTrainStorage(resourceKind)
-    local pageSize = 10
+    local pageSize = 2
     local page = 1
 
     while true do
@@ -844,10 +864,20 @@ local function selectTrainStorage(resourceKind)
 
             if input == "q" then
                 return nil
-            elseif input == "n" and page < totalPages then
-                page = page + 1
-            elseif input == "p" and page > 1 then
-                page = page - 1
+            elseif input == "n" then
+                if page < totalPages then
+                    page = page + 1
+                else
+                    print("Already on the last page.")
+                    sleep(1)
+                end
+            elseif input == "p" then
+                if page > 1 then
+                    page = page - 1
+                else
+                    print("Already on the first page.")
+                    sleep(1)
+                end
             else
                 local n = tonumber(input)
                 if n and visible[startIndex + n - 1] then
