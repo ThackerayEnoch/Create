@@ -638,25 +638,6 @@ local function handleAdvancedMessage(sender, message)
     end
 end
 
-local function handleRednetEvent(sender, message, protocolName)
-    if protocolName == nil then
-        log("RX REDNET #" .. tostring(sender) .. " protocol=nil")
-        return
-    end
-
-    if protocolName ~= protocol.PROTOCOL then
-        log("RX #" .. tostring(sender) .. " ignored protocol=" .. tostring(protocolName))
-        return
-    end
-
-    log("RX REDNET #" .. tostring(sender) .. " protocol=" .. tostring(protocolName))
-    local ok, err = pcall(handleAdvancedMessage, sender, message)
-    if not ok then
-        log("RX HANDLER ERROR #" .. tostring(sender) .. ": " .. tostring(err))
-    end
-end
-
-
 --------------------------------------------------
 -- Monitor drawing API
 --------------------------------------------------
@@ -1215,30 +1196,60 @@ local function controllerTick()
     end
 end
 
--- Run one tick immediately, then use a single event loop for BOTH periodic
--- controller work and rednet messages. This guarantees that no second
--- rednet.receive() coroutine can consume or race with ALLOW_RENAME.
+-- Run one tick immediately.
 controllerTick()
 
 if not config.advancedNetwork then
     while true do
         sleep(config.checkInterval)
-        controllerTick()
-    end
-end
-
-local controllerTimer = os.startTimer(config.checkInterval)
-while true do
-    local event, a, b, c = os.pullEvent()
-
-    if event == "rednet_message" then
-        handleRednetEvent(a, b, c)
-
-    elseif event == "timer" and a == controllerTimer then
         local ok, err = pcall(controllerTick)
         if not ok then
             log("CONTROLLER TICK ERROR: " .. tostring(err))
         end
-        controllerTimer = os.startTimer(config.checkInterval)
+    end
+end
+
+--------------------------------------------------
+-- Advanced runtime loop
+--
+-- IMPORTANT:
+-- Use ONE rednet.receive() consumer for the whole lifetime of the client.
+-- Do not switch to os.pullEvent("rednet_message") and do not create a
+-- second rednet.receive() coroutine. This keeps ALLOW_RENAME/PAUSE/ENABLE
+-- reception on the exact same path that already works during installation.
+--------------------------------------------------
+
+local nextControllerTick = os.clock() + config.checkInterval
+
+while true do
+    local remaining = math.max(0.05, nextControllerTick - os.clock())
+
+    local okReceive, sender, message = pcall(function()
+        return rednet.receive(protocol.PROTOCOL, remaining)
+    end)
+
+    if not okReceive then
+        log("REDNET RECEIVE ERROR: " .. tostring(sender))
+        rednetOpened = false
+        modemSide = nil
+        openRednet()
+    elseif sender ~= nil then
+        -- The protocol argument above already filters unrelated Rednet
+        -- traffic. Keep this handler as the single RX path.
+        local okHandler, handlerErr = pcall(function()
+            handleAdvancedMessage(sender, message)
+        end)
+
+        if not okHandler then
+            log("RX HANDLER ERROR #" .. tostring(sender) .. ": " .. tostring(handlerErr))
+        end
+    end
+
+    if os.clock() >= nextControllerTick then
+        local okTick, tickErr = pcall(controllerTick)
+        if not okTick then
+            log("CONTROLLER TICK ERROR: " .. tostring(tickErr))
+        end
+        nextControllerTick = os.clock() + config.checkInterval
     end
 end
