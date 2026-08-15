@@ -368,16 +368,28 @@ local function getInventoryInfo(peripheralName)
         return device.list()
     end)
 
-    if not ok or type(items) ~= "table" then
-        return nil
+    if ok and type(items) == "table" then
+        return {
+            peripheralName = peripheralName,
+            peripheralType = peripheral.getType(peripheralName),
+            peripheral = device,
+            kind = "item",
+            items = items
+        }
     end
 
-    return {
-        peripheralName = peripheralName,
-        peripheralType = peripheral.getType(peripheralName),
-        peripheral = device,
-        items = items
-    }
+    local tanks = readFluidTanks(device)
+    if type(tanks) == "table" then
+        return {
+            peripheralName = peripheralName,
+            peripheralType = peripheral.getType(peripheralName),
+            peripheral = device,
+            kind = "fluid",
+            items = tanks
+        }
+    end
+
+    return nil
 end
 
 local function scanInventories()
@@ -427,6 +439,7 @@ local function selectInventory(excludedPeripheralName)
 
                 print("[" .. i .. "] " .. inventory.peripheralName)
                 print("    Type: " .. tostring(inventory.peripheralType))
+                print("    Kind: " .. tostring(inventory.kind or "item"))
                 print("    Used slots: " .. tostring(slotCount))
                 print()
             end
@@ -451,11 +464,12 @@ local function buildItemList(inventory)
 
     for _, item in pairs(inventory.items) do
         if item and item.name then
-            if not aggregated[item.name] then
-                aggregated[item.name] = 0
+            local key = item.name
+            local value = item.count or item.amount or 0
+            if not aggregated[key] then
+                aggregated[key] = 0
             end
-
-            aggregated[item.name] = aggregated[item.name] + (item.count or 0)
+            aggregated[key] = aggregated[key] + value
         end
     end
 

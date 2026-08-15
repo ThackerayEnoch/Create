@@ -256,23 +256,30 @@ local function selectResource(storage)
     clearScreen()
     print("=== Resource Type ===")
     print()
+    print("Choose the exact resource currently present in the storage.")
     print("Namespace prefixes are removed from the station/broadcast name.")
     print("Example: minecraft:iron_block -> iron_block")
     print()
 
     if #names > 0 then
-        for i, name in ipairs(names) do print("[" .. i .. "] " .. name) end
-        print("[m] manually enter")
+        for i, name in ipairs(names) do
+            print("[" .. i .. "] " .. name)
+        end
+        print()
+        print("[m] manual entry")
         local choice = ask("Select resource", "m")
         if choice ~= "m" then
             local number = tonumber(choice)
-            if number and names[number] then return normalizeResourceName(names[number]) end
+            if number and names[number] then
+                return normalizeResourceName(names[number])
+            end
         end
     end
 
     while true do
         local value = normalizeResourceName(ask("Resource type"))
         if value ~= "" then return value end
+        print("Resource cannot be empty.")
     end
 end
 
@@ -368,8 +375,10 @@ local function selfCheck()
         local ok = pcall(function() storage.list() end)
         if not ok then table.insert(problems, "configured train storage does not support list()") end
     elseif config.resourceKind == "fluid" then
-        local ok = pcall(function() storage.tanks() end)
-        if not ok then table.insert(problems, "configured train storage does not support tanks()") end
+        local tanks = readFluidTanks(storage)
+        if type(tanks) ~= "table" then
+            table.insert(problems, "configured train storage does not support tanks()/getTanks()/getFluids()/getFluid()")
+        end
     end
 
     if config and tostring(config.resourceType or "") == "" then
