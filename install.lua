@@ -431,6 +431,9 @@ local function scanInventories()
 end
 
 local function selectInventory(excludedPeripheralName)
+    local pageSize = 10
+    local page = 1
+
     while true do
         local inventories = scanInventories()
 
@@ -452,26 +455,50 @@ local function selectInventory(excludedPeripheralName)
             print("The device must support list() or fluid tank APIs such as tanks()/getTanks()/getFluids().")
             pause()
         else
-            for i, inventory in ipairs(visible) do
+            local totalPages = math.ceil(#visible / pageSize)
+            if page > totalPages then
+                page = totalPages
+            end
+
+            local startIndex = (page - 1) * pageSize + 1
+            local endIndex = math.min(startIndex + pageSize - 1, #visible)
+
+            print("Page " .. tostring(page) .. "/" .. tostring(totalPages))
+            print()
+
+            for i = startIndex, endIndex do
+                local inventory = visible[i]
                 local slotCount = 0
                 for _ in pairs(inventory.items) do
                     slotCount = slotCount + 1
                 end
 
-                print("[" .. i .. "] " .. inventory.peripheralName)
+                print("[" .. (i - startIndex + 1) .. "] " .. inventory.peripheralName)
                 print("    Type: " .. tostring(inventory.peripheralType))
                 print("    Kind: " .. tostring(inventory.kind or "item"))
                 print("    Used slots: " .. tostring(slotCount))
                 print()
             end
 
-            local choice = tonumber(ask("Select inventory"))
-            if choice and visible[choice] then
-                return visible[choice]
-            end
+            print("[n] next page   [p] previous page   [q] cancel")
 
-            print("Invalid selection.")
-            sleep(1)
+            local input = string.lower(ask("Select inventory"))
+
+            if input == "q" then
+                return nil
+            elseif input == "n" and page < totalPages then
+                page = page + 1
+            elseif input == "p" and page > 1 then
+                page = page - 1
+            else
+                local choice = tonumber(input)
+                if choice and visible[startIndex + choice - 1] then
+                    return visible[startIndex + choice - 1]
+                end
+
+                print("Invalid selection.")
+                sleep(1)
+            end
         end
     end
 end
