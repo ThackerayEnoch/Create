@@ -69,30 +69,44 @@ local function findWirelessModem()
 end
 
 local function openRednet()
-    if not loadProtocol() then return false end
+    if not loadProtocol() then
+        return false
+    end
 
     if rednetOpened and modemSide then
         local openOk, opened = pcall(function()
             return rednet.isOpen(modemSide)
         end)
+
         if openOk and opened then
             return true
         end
+
         rednetOpened = false
         modemSide = nil
     end
 
     modemSide = findWirelessModem()
-    if not modemSide then return false end
+    if not modemSide then
+        return false
+    end
 
     local ok, err = pcall(function()
         if not rednet.isOpen(modemSide) then
             rednet.open(modemSide)
         end
     end)
+
     if not ok then
-        log("REDNET OPEN FAILED on " .. tostring(modemSide) .. ": " .. tostring(err))
+        log(
+            "REDNET OPEN FAILED on " ..
+            tostring(modemSide) ..
+            ": " ..
+            tostring(err)
+        )
+
         rednetOpened = false
+        modemSide = nil
         return false
     end
 
@@ -1238,37 +1252,58 @@ end
 --------------------------------------------------
 
 local function networkLoop()
-    log("Network listener started on " .. tostring(modemSide))
+    log("Network listener started")
 
     while true do
+        -- 确保 Rednet 已打开
         if not openRednet() then
             sleep(1)
-        end
+        else
+            -- 直接监听 Rednet 层事件
+            local ok, event, sender, message, protocolName =
+                pcall(function()
+                    return os.pullEvent("rednet_message")
+                end)
 
-        -- Use the protocol filter here so the station only processes packets for
-        -- this controller; raw rednet.receive() can easily hide matching traffic
-        -- behind unrelated modem packets or protocol mismatches.
-        local ok, sender, message = pcall(function()
-            return rednet.receive(protocol.PROTOCOL, 1)
-        end)
+            if not ok then
+                log("REDNET RECEIVE ERROR: " .. tostring(event))
 
-        if not ok then
-            log("REDNET RECEIVE ERROR: " .. tostring(sender))
-            rednetOpened = false
-            modemSide = nil
-            sleep(1)
-            openRednet()
-        elseif sender ~= nil then
-            local actualProtocol = type(message) == "table" and message.protocol or nil
-            log("RX #" .. tostring(sender) ..
-                " protocol=" .. tostring(actualProtocol) ..
-                " expected=" .. tostring(protocol and protocol.PROTOCOL))
+                rednetOpened = false
+                modemSide = nil
 
-            local handlerOk, handlerErr = pcall(function()
-                handleAdvancedMessage(sender, message)
-            end)
-            if not handlerOk then
-                log("RX HANDLER ERROR #" .. tostring(sender) .. ": " .. tostring(handlerErr))
+                sleep(1)
+            else
+                -- 收到 Rednet 消息
+                if type(message) ~= "table" then
+                    log(
+                        "RX RAW #" ..
+                        tostring(sender) ..
+                        " non-table message"
+                    )
+                else
+                    log(
+                        "RX #" ..
+                        tostring(sender) ..
+                        " protocol=" ..
+                        tostring(protocolName) ..
+                        " expected=" ..
+                        tostring(protocol and protocol.PROTOCOL)
+                    )
+
+                    -- 处理消息
+                    local handlerOk, handlerErr = pcall(function()
+                        handleAdvancedMessage(sender, message)
+                    end)
+
+                    if not handlerOk then
+                        log(
+                            "RX HANDLER ERROR #" ..
+                            tostring(sender) ..
+                            ": " ..
+                            tostring(handlerErr)
+                        )
+                    end
+                end
             end
         end
     end
@@ -1278,15 +1313,14 @@ local function tickLoop()
     log("Controller tick loop started")
 
     while true do
-        -- Run immediately so the station does not wait one full interval
-        -- after startup before determining its state.
+        -- 启动后立即执行一次
         local ok, err = pcall(controllerTick)
+
         if not ok then
             log("CONTROLLER TICK ERROR: " .. tostring(err))
         end
 
-        -- While this coroutine sleeps, networkLoop remains blocked inside
-        -- rednet.receive() and can process incoming ALLOW/PAUSE/ENABLE.
+        -- 5 秒后再次执行
         sleep(config.checkInterval)
     end
 end
