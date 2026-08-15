@@ -1252,59 +1252,27 @@ end
 --------------------------------------------------
 
 local function networkLoop()
-    log("Network listener started")
+    log("========== NETWORK LOOP START ==========")
 
     while true do
-        -- 确保 Rednet 已打开
-        if not openRednet() then
-            sleep(1)
+        log("RX WAIT")
+
+        local sender, message, protocolName =
+            rednet.receive(protocol.PROTOCOL)
+
+        log(
+            "RX GOT | sender=" ..
+            tostring(sender) ..
+            " | protocol=" ..
+            tostring(protocolName) ..
+            " | type=" ..
+            tostring(type(message))
+        )
+
+        if type(message) == "table" then
+            log("RX MESSAGE TYPE = " .. tostring(message.type))
         else
-            -- 直接监听 Rednet 层事件
-            local ok, event, sender, message, protocolName =
-                pcall(function()
-                    return os.pullEvent("rednet_message")
-                end)
-
-            if not ok then
-                log("REDNET RECEIVE ERROR: " .. tostring(event))
-
-                rednetOpened = false
-                modemSide = nil
-
-                sleep(1)
-            else
-                -- 收到 Rednet 消息
-                if type(message) ~= "table" then
-                    log(
-                        "RX RAW #" ..
-                        tostring(sender) ..
-                        " non-table message"
-                    )
-                else
-                    log(
-                        "RX #" ..
-                        tostring(sender) ..
-                        " protocol=" ..
-                        tostring(protocolName) ..
-                        " expected=" ..
-                        tostring(protocol and protocol.PROTOCOL)
-                    )
-
-                    -- 处理消息
-                    local handlerOk, handlerErr = pcall(function()
-                        handleAdvancedMessage(sender, message)
-                    end)
-
-                    if not handlerOk then
-                        log(
-                            "RX HANDLER ERROR #" ..
-                            tostring(sender) ..
-                            ": " ..
-                            tostring(handlerErr)
-                        )
-                    end
-                end
-            end
+            log("RX MESSAGE = " .. tostring(message))
         end
     end
 end
