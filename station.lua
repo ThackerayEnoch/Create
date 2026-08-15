@@ -81,19 +81,48 @@ local function broadcastMessage(messageType, resourceType, extra)
 end
 
 local function discoverServers()
-    if not openRednet() then return end
-    broadcastMessage(protocol.HELLO)
+    if not openRednet() then
+        log("SERVER DISCOVERY FAILED: wireless modem_x not available")
+        return false
+    end
+
+    local ok, result = pcall(function()
+        return rednet.broadcast(
+            { protocol = protocol.PROTOCOL, type = protocol.HELLO },
+            protocol.PROTOCOL
+        )
+    end)
+
+    if not ok or not result then
+        log("SERVER DISCOVERY FAILED: HELLO broadcast failed")
+        return false
+    end
+
+    log("TX BROADCAST HELLO")
+
     local deadline = os.clock() + discoveryWindow
+    local answerCount = 0
+
     while os.clock() < deadline do
         local timeout = math.max(0.05, deadline - os.clock())
         local sender, message = rednet.receive(protocol.PROTOCOL, timeout)
         if not sender then break end
+
         if type(message) == "table" and message.type == protocol.ANSWER and message.resourceType then
-            if serverByResource[message.resourceType] == nil then
-                serverByResource[message.resourceType] = sender
+            local resource = normalizeResourceName(message.resourceType)
+            answerCount = answerCount + 1
+            if serverByResource[resource] == nil then
+                serverByResource[resource] = sender
+                log("RX #" .. tostring(sender) .. " ANSWER [" .. resource .. "]")
             end
         end
     end
+
+    if answerCount == 0 then
+        log("SERVER DISCOVERY: no ANSWER received")
+    end
+
+    return true
 end
 
 local function requestRename(resourceType)

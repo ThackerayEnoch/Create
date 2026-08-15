@@ -536,53 +536,159 @@ end
 
 local function openRednetForInstall()
     local modem = findWirelessModem()
-    if not modem then return nil end
-    if not rednet.isOpen(modem) then rednet.open(modem) end
-    return modem
+    if not modem then
+        return nil, "Wireless modem not found. Required device name: modem_<number>."
+    end
+
+    local ok, err = pcall(function()
+        if not rednet.isOpen(modem) then
+            rednet.open(modem)
+        end
+    end)
+
+    if not ok then
+        return nil, "Failed to open wireless modem " .. modem .. ": " .. tostring(err)
+    end
+
+    return modem, nil
 end
 
 local function discoverServersForResource(resourceType)
     local protocol = loadProtocol()
-    local modem = openRednetForInstall()
+    resourceType = normalizeResourceName(resourceType)
+
+    local modem, modemError = openRednetForInstall()
     if not modem then
-        print("No modem found; CLIENT_SERVER discovery cannot continue.")
-        return {}
+        return nil, nil, modemError
     end
 
-    rednet.broadcast({protocol=protocol.PROTOCOL, type=protocol.HELLO}, protocol.PROTOCOL)
-    local deadline = os.clock() + 3
-    local found = {}
+    clearScreen()
+    print("========================================")
+    print("        Center Server Discovery")
+    print("========================================")
+    print()
+    print("Wireless modem: " .. modem)
+    print("Protocol:        " .. protocol.PROTOCOL)
+    print("Resource filter: " .. resourceType)
+    print()
+
+    local message = {
+        protocol = protocol.PROTOCOL,
+        type = protocol.HELLO
+    }
+
+    local sent, sendResult = pcall(function()
+        return rednet.broadcast(message, protocol.PROTOCOL)
+    end)
+
+    if not sent or not sendResult then
+        return nil, nil, "HELLO broadcast failed on " .. modem .. "."
+    end
+
+    print("HELLO sent. Waiting 5 seconds for ANSWER...")
+    print()
+
+    local deadline = os.clock() + 5
+    local allAnswers = {}
+    local matching = {}
     local seen = {}
+    local answerCount = 0
+
     while os.clock() < deadline do
-        local sender, message = rednet.receive(protocol.PROTOCOL, math.max(0.05, deadline-os.clock()))
-        if not sender then break end
-        if type(message) == "table" and message.type == protocol.ANSWER and message.resourceType == resourceType and not seen[sender] then
-            seen[sender] = true
-            table.insert(found, sender)
+        local timeout = math.max(0.05, deadline - os.clock())
+        local sender, received = rednet.receive(protocol.PROTOCOL, timeout)
+        if not sender then
+            break
+        end
+
+        if type(received) == "table" and received.type == protocol.ANSWER then
+            local receivedResource = normalizeResourceName(received.resourceType)
+            answerCount = answerCount + 1
+
+            if not seen[sender] then
+                seen[sender] = true
+                table.insert(allAnswers, {
+                    id = sender,
+                    resourceType = receivedResource
+                })
+
+                if receivedResource == resourceType then
+                    table.insert(matching, sender)
+                end
+            end
         end
     end
-    table.sort(found)
-    return found
+
+    table.sort(allAnswers, function(a, b)
+        return tonumber(a.id) < tonumber(b.id)
+    end)
+    table.sort(matching, function(a, b)
+        return tonumber(a) < tonumber(b)
+    end)
+
+    return matching, allAnswers, nil
 end
 
 local function selectServerForResource(resourceType)
-    local servers = discoverServersForResource(resourceType)
+    local servers, allAnswers, discoveryError = discoverServersForResource(resourceType)
+
     clearScreen()
     print("========================================")
     print("        Center Server Selection")
     print("========================================")
     print()
-    print("Resource: " .. resourceType)
+    print("Resource: " .. normalizeResourceName(resourceType))
     print()
-    if #servers == 0 then
-        print("No matching center server answered HELLO.")
+
+    if discoveryError then
+        print("DISCOVERY FAILED")
+        print()
+        print(discoveryError)
+        print()
+        print("Required wireless modem name: modem_<number>")
+        print("The modem must report isWireless() == true.")
         pause()
         return nil
     end
-    for i, id in ipairs(servers) do print("["..i.."] Computer ID "..id) end
+
+    print("ANSWER received:")
+    if not allAnswers or #allAnswers == 0 then
+        print("  <none>")
+    else
+        for _, answer in ipairs(allAnswers) do
+            print("  Computer ID " .. tostring(answer.id) .. " -> " .. tostring(answer.resourceType))
+        end
+    end
+
+    print()
+    if not servers or #servers == 0 then
+        print("No matching center server answered HELLO.")
+        print()
+        if allAnswers and #allAnswers > 0 then
+            print("A server answered, but its resource type did not match.")
+            print("Check the Resource type on both sides.")
+        else
+            print("No ANSWER was received at all.")
+            print("Check that the center server is running and has wireless modem_x.")
+        end
+        print()
+        print("The center server display should show:")
+        print("  RX #<client> HELLO")
+        print("  TX ANSWER -> #<client>")
+        pause()
+        return nil
+    end
+
+    print("Matching servers:")
+    for i, id in ipairs(servers) do
+        print("[" .. i .. "] Computer ID " .. id)
+    end
+
     while true do
-        local n=tonumber(ask("Select center server",1))
-        if n and servers[n] then return servers[n] end
+        local n = tonumber(ask("Select center server", 1))
+        if n and servers[n] then
+            return servers[n]
+        end
         print("Invalid selection.")
     end
 end
