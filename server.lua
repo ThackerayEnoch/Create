@@ -385,6 +385,7 @@ local resourceType = normalizeResourceName(config.resourceType)
 local paused = false
 local noResource = false
 local noRequestSince = os.clock()
+local lastResourceCheck = 0
 local logs = {}
 local MAX_LOGS = 15
 local currentStatus = "STARTING"
@@ -518,16 +519,14 @@ local function isFull()
     local okList, items = pcall(function() return storage.list() end)
     if not okList or type(items) ~= "table" then return false end
 
-    local usedSlots = 0
     local resourceCount = 0
     for _, item in pairs(items) do
-        usedSlots = usedSlots + 1
         if item and normalizeResourceName(item.name) == resourceType then
             resourceCount = resourceCount + (tonumber(item.count) or 0)
         end
     end
 
-    return usedSlots >= sizeLimit and resourceCount > 0
+    return resourceCount >= sizeLimit and resourceCount > 0
 end
 
 local function runInitialState()
@@ -614,6 +613,18 @@ while true do
             stationSetName(supplyName)
             setStatus("AVAILABLE")
             broadcast(protocol.ENABLE)
+        end
+    end
+
+    if noResource and os.clock() - lastResourceCheck >= 5 then
+        lastResourceCheck = os.clock()
+        if isFull() then
+            noResource = false
+            paused = false
+            stationSetName(supplyName)
+            setStatus("AVAILABLE")
+            broadcast(protocol.ENABLE)
+            addLog("RECOVER ENABLE | resourceCount >= containerSize")
         end
     end
 
