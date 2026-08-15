@@ -583,7 +583,7 @@ local function advancedState(station, entry, inventory, count, percent)
         noResourceReported[entry.id] = false
     end
 
-    if trainPresent and (current == requestName or current == waitingName) then
+    if not paused and trainPresent and (current == requestName or current == waitingName) then
         local trainStorage = trainStorageForStation(entry)
         if trainStorage then
             local trainCount = getResourceCount(
@@ -600,7 +600,7 @@ local function advancedState(station, entry, inventory, count, percent)
         end
     end
 
-    if current == requestName then
+    if not paused and current == requestName then
         local lastHeartbeat = lastHeartbeatAt[resource]
         if not lastHeartbeat or os.clock() - lastHeartbeat >= 20 then
             lastHeartbeatAt[resource] = os.clock()
@@ -649,6 +649,21 @@ local function handleAdvancedMessage(sender, message)
 
     if message.type == protocol.PAUSE and resource then
         pausedByResource[resource] = true
+        if runtimeConfig then
+            for _, entry in ipairs(runtimeConfig.stations or {}) do
+                if entry.advanced and normalizeResourceName(entry.resourceType or entry.item) == resource then
+                    local station = findStation(entry)
+                    if station then
+                        local current = getStationName(station)
+                        local waitingName = entry.waitingName or ("WATTING_" .. (entry.requestName or ((entry.resourceType or entry.item) .. "_Request_" .. (entry.factoryId or entry.id or "Factory"))))
+                        if current == (entry.requestName or ((entry.resourceType or entry.item) .. "_Request_" .. (entry.factoryId or entry.id or "Factory"))) then
+                            setStationName(station, waitingName)
+                            log("PAUSE applied -> " .. tostring(waitingName))
+                        end
+                    end
+                end
+            end
+        end
         return
     end
 
