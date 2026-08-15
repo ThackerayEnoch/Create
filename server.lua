@@ -606,14 +606,13 @@ while true do
         end
     end
 
-    if isFull() then
-        if noResource or paused or currentStatus ~= "AVAILABLE" then
-            noResource = false
-            paused = false
-            stationSetName(supplyName)
-            setStatus("AVAILABLE")
-            broadcast(protocol.ENABLE)
-        end
+    if noResource and isFull() and currentStatus ~= "NO REQUEST" then
+        noResource = false
+        paused = false
+        stationSetName(supplyName)
+        setStatus("AVAILABLE")
+        broadcast(protocol.ENABLE)
+        addLog("RECOVER ENABLE | resourceCount >= containerSize")
     end
 
     if currentStatus ~= "NO REQUEST" and noResource and os.clock() - lastCapacityCheck >= 5 then
@@ -628,7 +627,7 @@ while true do
         end
     end
 
-    if currentStatus ~= "NO REQUEST" and os.clock() - noRequestSince >= 60 then
+    if currentStatus ~= "NO REQUEST" and not noResource and os.clock() - noRequestSince >= 60 then
         stationSetName(requestName)
         setStatus("NO REQUEST")
         addLog("TIMEOUT 60s -> " .. requestName)
