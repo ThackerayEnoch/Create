@@ -446,6 +446,28 @@ local function setStationName(station, name)
     return true
 end
 
+local function pulseDisableSignal(entry)
+    local side = tostring(entry.redstoneSide or "back")
+    local ok, err = pcall(function()
+        redstone.setOutput(side, true)
+        sleep(0.2)
+        redstone.setOutput(side, false)
+    end)
+
+    if not ok then
+        log("Disable redstone pulse failed on " .. side .. ": " .. tostring(err))
+    end
+end
+
+local function transitionToDisabled(station, entry, targetName)
+    if not setStationName(station, targetName) then
+        return false
+    end
+
+    pulseDisableSignal(entry)
+    return true
+end
+
 local function updateStationState(station, entry, percent)
     local current = getStationName(station)
     if not current then
@@ -458,7 +480,7 @@ local function updateStationState(station, entry, percent)
     --   - In the middle range, keep the current state unchanged.
     if current == entry.stationName then
         if percent >= entry.disablePercent then
-            if setStationName(station, entry.disabledName) then
+            if transitionToDisabled(station, entry, entry.disabledName) then
                 return "disabled"
             end
             return "error"
@@ -486,7 +508,7 @@ local function updateStationState(station, entry, percent)
             return "enabled"
         end
     else
-        if setStationName(station, entry.disabledName) then
+        if transitionToDisabled(station, entry, entry.disabledName) then
             return "disabled"
         end
     end
@@ -534,7 +556,7 @@ local function advancedState(station, entry, inventory, count, percent)
         noResourceReported[entry.id] = false
         trainWasPresent[entry.id] = isTrainPresent(station)
         if current ~= disabledName then
-            setAdvancedName(station, entry, disabledName)
+            transitionToDisabled(station, entry, disabledName)
         end
         return "disabled"
     end
