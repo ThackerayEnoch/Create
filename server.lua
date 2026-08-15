@@ -273,11 +273,17 @@ local function installServer()
     print("=== Supply Server Setup ===")
     print()
     local factoryId = ask("Factory identifier", "Factory")
+    local containerSize = tonumber(ask("Train container size", tostring(containerSize > 0 and containerSize or 0)))
+    if not containerSize or containerSize <= 0 then
+        containerSize = 0
+        print("Container size must be a positive number; using detected value if available.")
+    end
     local requestName = resource .. "_Request_" .. factoryId
     local supplyName = resource .. "_Supply"
     print()
     print("Request name: " .. requestName)
     print("Supply name:  " .. supplyName)
+    print("Container size: " .. tostring(containerSize))
     print()
 
     if not askYesNo("Write server configuration?", "y") then return end
@@ -380,7 +386,7 @@ local paused = false
 local noResource = false
 local noRequestSince = os.clock()
 local logs = {}
-local MAX_LOGS = 10
+local MAX_LOGS = 15
 local currentStatus = "STARTING"
 
 local function now()
@@ -435,7 +441,7 @@ local function drawMonitor()
     line(4, "Status:   " .. mode, noResource and colors.red or (paused and colors.orange or colors.lime))
     line(5, "Modem:    " .. modemName, colors.lightBlue)
     line(6, "Monitor:  " .. monitorName, colors.lightBlue)
-    line(7, "Last 10 runtime events:", colors.yellow)
+    line(7, "Last 15 runtime events:", colors.yellow)
 
     local maxVisible = math.max(1, height - 7)
     for i = 1, math.min(#logs, maxVisible) do
