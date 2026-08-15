@@ -37,7 +37,7 @@ local noResourceReported = {}
 local trainWasPresent = {}
 local runtimeConfig = nil
 local helloInterval = 30
-local discoveryWindow = 3
+local discoveryWindow = 5
 local modemSide = nil
 
 --------------------------------------------------
@@ -70,27 +70,67 @@ end
 
 local function openRednet()
     if not loadProtocol() then return false end
-    if rednetOpened then return true end
+
+    if rednetOpened and modemSide then
+        local openOk, opened = pcall(function()
+            return rednet.isOpen(modemSide)
+        end)
+        if openOk and opened then
+            return true
+        end
+        rednetOpened = false
+        modemSide = nil
+    end
+
     modemSide = findWirelessModem()
     if not modemSide then return false end
-    if not rednet.isOpen(modemSide) then
-        rednet.open(modemSide)
+
+    local ok, err = pcall(function()
+        if not rednet.isOpen(modemSide) then
+            rednet.open(modemSide)
+        end
+    end)
+    if not ok then
+        log("REDNET OPEN FAILED on " .. tostring(modemSide) .. ": " .. tostring(err))
+        rednetOpened = false
+        return false
     end
+
     rednetOpened = true
     return true
 end
 
 local function broadcastMessage(messageType, resourceType, extra)
-    if not openRednet() then return false end
+    if not loadProtocol() then
+        log("TX FAILED " .. tostring(messageType) .. ": protocol.lua unavailable")
+        return false, "protocol unavailable"
+    end
+
+    if not openRednet() then
+        log("TX FAILED " .. tostring(messageType) .. ": wireless modem_x unavailable")
+        return false, "wireless modem unavailable"
+    end
+
     local msg = { protocol = protocol.PROTOCOL, type = messageType }
-    if resourceType ~= nil then msg.resourceType = resourceType end
+    if resourceType ~= nil then
+        msg.resourceType = normalizeResourceName(resourceType)
+    end
     if type(extra) == "table" then
         for k, v in pairs(extra) do msg[k] = v end
     end
-    local ok = pcall(function()
+
+    local ok, err = pcall(function()
         rednet.broadcast(msg, protocol.PROTOCOL)
     end)
-    return ok
+
+    if not ok then
+        log("TX FAILED " .. tostring(messageType) .. ": " .. tostring(err))
+        return false, tostring(err)
+    end
+
+    log("TX BROADCAST " .. tostring(messageType) ..
+        (resourceType and (" [" .. normalizeResourceName(resourceType) .. "]") or ""))
+    return true, nil
 end
 
 local function discoverServers()
@@ -139,8 +179,12 @@ local function discoverServers()
 end
 
 local function requestRename(resourceType)
-    broadcastMessage(protocol.REQUEST_RENAME, resourceType)
-    lastRequestAt[resourceType] = os.clock()
+    local resource = normalizeResourceName(resourceType)
+    local ok = broadcastMessage(protocol.REQUEST_RENAME, resource)
+    if ok then
+        lastRequestAt[resource] = os.clock()
+    end
+    return ok
 end
 
 local function getResourceCount(device, resourceType, isFluid)
@@ -437,50 +481,77 @@ local function setAdvancedName(station, entry, name)
 end
 
 local function advancedState(station, entry, inventory, count, percent)
-    local resource = entry.resourceType or entry.item
+    if not loadProtocol() then
+        return "error"
+    end
+
+    local resource = normalizeResourceName(entry.resourceType or entry.item)
     local requestName, waitingName, disabledName = advancedNames(entry)
     local current = getStationName(station)
     local paused = pausedByResource[resource] == true
 
-    -- Keep the original threshold controller as the demand decision source.
-    local needs = percent < (entry.enablePercent or 20)
-    local full = percent >= (entry.disablePercent or 80)
+    if not current then
+        return "error"
+    end
 
+    local minPercent = entry.enablePercent or 20
+    local maxPercent = entry.disablePercent or 80
+    local needs = percent < minPercent
+    local full = percent >= maxPercent
+
+    -- Full stock always disables the request station.
     if full then
-        if current ~= disabledName then setAdvancedName(station, entry, disabledName) end
+        noResourceReported[entry.id] = false
+        trainWasPresent[entry.id] = isTrainPresent(station)
+        if current ~= disabledName then
+            setAdvancedName(station, entry, disabledName)
+        end
         return "disabled"
+    end
+
+    -- A WATTING station only means "I currently need the resource and am
+    -- waiting for the supply server to authorize the request name".
+    -- If stock rises above MIN before authorization, cancel WATTING and
+    -- return to DISABLE instead of becoming permanently stuck.
+    if not needs and current == waitingName then
+        if not paused then
+            setAdvancedName(station, entry, disabledName)
+        end
+        return paused and "waiting" or "disabled"
     end
 
     if needs then
         if current ~= waitingName and current ~= requestName then
-            setAdvancedName(station, entry, waitingName)
-            current = waitingName
+            if setAdvancedName(station, entry, waitingName) then
+                current = waitingName
+            end
         end
-        if current == requestName then
-            -- An ENABLE station which is still below the threshold is already participating.
-        elseif not paused and (not lastRequestAt[resource] or os.clock() - lastRequestAt[resource] >= 5) then
-            requestRename(resource)
+
+        if current == waitingName and not paused then
+            local last = lastRequestAt[resource]
+            if not last or os.clock() - last >= 5 then
+                requestRename(resource)
+            end
         end
     elseif current == disabledName then
-        -- Hysteresis: once blocked, remain blocked until below the enable threshold.
         return "disabled"
-    elseif current ~= requestName and current ~= waitingName then
+    elseif current ~= requestName then
         setAdvancedName(station, entry, requestName)
+        current = requestName
     end
 
-    -- NO_RESOURCE is only valid when a train is actually present at this
-    -- request station AND the bound portable-storage interface reports zero
-    -- of the requested resource.
-    --
-    -- Report once per train arrival to avoid broadcasting the same event every
-    -- controller tick while the train remains stopped.
+    -- NO_RESOURCE is valid ONLY when a train is physically present at this
+    -- station and its bound portable storage reports zero of this resource.
     local trainPresent = isTrainPresent(station)
     local wasPresent = trainWasPresent[entry.id] == true
 
-    if trainPresent and not wasPresent then
+    if not trainPresent then
+        trainWasPresent[entry.id] = false
+        noResourceReported[entry.id] = false
+    elseif not wasPresent then
+        trainWasPresent[entry.id] = true
         noResourceReported[entry.id] = false
     end
-    trainWasPresent[entry.id] = trainPresent
 
     if trainPresent and (current == requestName or current == waitingName) then
         local trainStorage = trainStorageForStation(entry)
@@ -492,15 +563,8 @@ local function advancedState(station, entry, inventory, count, percent)
             )
 
             if trainCount ~= nil and trainCount <= 0 and not noResourceReported[entry.id] then
-                if loadProtocol() then
-                    if broadcastMessage(protocol.NO_RESOURCE, resource) then
-                        log("TX BROADCAST NO_RESOURCE [" .. resource .. "]")
-                        noResourceReported[entry.id] = true
-                    else
-                        log("FAILED TO BROADCAST NO_RESOURCE [" .. resource .. "]")
-                    end
-                else
-                    log("Cannot broadcast NO_RESOURCE: protocol.lua unavailable")
+                if broadcastMessage(protocol.NO_RESOURCE, resource) then
+                    noResourceReported[entry.id] = true
                 end
             end
         end
@@ -513,14 +577,15 @@ local function advancedState(station, entry, inventory, count, percent)
 end
 
 local function handleAdvancedMessage(message)
+    if not loadProtocol() then return end
     if type(message) ~= "table" or message.protocol ~= protocol.PROTOCOL then return end
-    local resource = message.resourceType
+    local resource = message.resourceType and normalizeResourceName(message.resourceType) or nil
 
     if message.type == protocol.ALLOW_RENAME and resource then
         pausedByResource[resource] = false
         if runtimeConfig then
             for _, entry in ipairs(runtimeConfig.stations or {}) do
-                if entry.advanced and (entry.resourceType or entry.item) == resource then
+                if entry.advanced and normalizeResourceName(entry.resourceType or entry.item) == resource then
                     local station = findStation(entry)
                     if station and getStationName(station) == (entry.waitingName or ("WATTING_" .. (entry.requestName or ""))) then
                         setStationName(station, entry.requestName or ((entry.resourceType or entry.item) .. "_Request_" .. (entry.factoryId or entry.id)))
@@ -540,7 +605,7 @@ local function handleAdvancedMessage(message)
         pausedByResource[resource] = false
         if runtimeConfig then
             for _, entry in ipairs(runtimeConfig.stations or {}) do
-                if entry.advanced and (entry.resourceType or entry.item) == resource then
+                if entry.advanced and normalizeResourceName(entry.resourceType or entry.item) == resource then
                     local station = findStation(entry)
                     if station then
                         local current = getStationName(station)
@@ -1093,7 +1158,13 @@ while true do
                 local percent = getPercentage(count, entry.capacity)
                 local state
                 if entry.advanced then
-                    state = advancedState(station, entry, inventory, count, percent)
+                    local ok, result = pcall(advancedState, station, entry, inventory, count, percent)
+                    if ok then
+                        state = result
+                    else
+                        state = "error"
+                        log("[" .. i .. "] Advanced state error: " .. tostring(result))
+                    end
                 else
                     state = updateStationState(station, entry, percent)
                 end
