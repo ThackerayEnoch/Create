@@ -358,6 +358,27 @@ end
 -- Inventory scanning
 --------------------------------------------------
 
+local function readFluidTanks(device)
+    if not device then
+        return nil
+    end
+
+    local methods = { "tanks", "getTanks", "getFluids", "getFluid" }
+    for _, methodName in ipairs(methods) do
+        local fn = device[methodName]
+        if type(fn) == "function" then
+            local ok, result = pcall(function()
+                return fn(device)
+            end)
+            if ok and type(result) == "table" then
+                return result
+            end
+        end
+    end
+
+    return nil
+end
+
 local function getInventoryInfo(peripheralName)
     local device = peripheral.wrap(peripheralName)
     if not device then
@@ -428,7 +449,7 @@ local function selectInventory(excludedPeripheralName)
 
         if #visible == 0 then
             print("No readable inventory device found.")
-            print("The device must support inventory.list().")
+            print("The device must support list() or fluid tank APIs such as tanks()/getTanks()/getFluids().")
             pause()
         else
             for i, inventory in ipairs(visible) do
@@ -719,27 +740,6 @@ local function selectServerForResource(resourceType)
         end
         print("Invalid selection.")
     end
-end
-
-local function readFluidTanks(device)
-    if not device then
-        return nil
-    end
-
-    local methods = { "tanks", "getTanks", "getFluids", "getFluid" }
-    for _, methodName in ipairs(methods) do
-        local fn = device[methodName]
-        if type(fn) == "function" then
-            local ok, result = pcall(function()
-                return fn(device)
-            end)
-            if ok and type(result) == "table" then
-                return result
-            end
-        end
-    end
-
-    return nil
 end
 
 local function storageSupportsItems(p)
