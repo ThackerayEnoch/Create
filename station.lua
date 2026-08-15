@@ -38,10 +38,21 @@ local helloInterval = 30
 local discoveryWindow = 3
 local modemSide = nil
 
-local function findModem()
+local function normalizeResourceName(name)
+    name = tostring(name or "")
+    local _, value = name:match("^([^:]+):(.+)$")
+    if value then return value end
+    return name
+end
+
+local function findWirelessModem()
     for _, name in ipairs(peripheral.getNames()) do
-        if peripheral.getType(name) == "modem" then
-            return name
+        if name:match("^modem_%d+$") and peripheral.getType(name) == "modem" then
+            local modem = peripheral.wrap(name)
+            if modem then
+                local ok, wireless = pcall(function() return modem.isWireless() end)
+                if ok and wireless == true then return name end
+            end
         end
     end
     return nil
@@ -50,7 +61,7 @@ end
 local function openRednet()
     if not loadProtocol() then return false end
     if rednetOpened then return true end
-    modemSide = findModem()
+    modemSide = findWirelessModem()
     if not modemSide then return false end
     if not rednet.isOpen(modemSide) then
         rednet.open(modemSide)
@@ -97,7 +108,7 @@ local function getResourceCount(device, resourceType, isFluid)
         if not ok or type(tanks) ~= "table" then return nil end
         local total = 0
         for _, tank in pairs(tanks) do
-            if tank and tank.name == resourceType then total = total + (tank.amount or 0) end
+            if tank and normalizeResourceName(tank.name) == resourceType then total = total + (tank.amount or 0) end
         end
         return total
     end
@@ -105,7 +116,7 @@ local function getResourceCount(device, resourceType, isFluid)
     if not ok or type(items) ~= "table" then return nil end
     local total = 0
     for _, item in pairs(items) do
-        if item and item.name == resourceType then total = total + (item.count or 0) end
+        if item and normalizeResourceName(item.name) == resourceType then total = total + (item.count or 0) end
     end
     return total
 end
@@ -921,6 +932,50 @@ end
 local config = loadConfig()
 runtimeConfig = config
 local monitor = getMonitor()
+
+local function selfCheck()
+    local problems = {}
+    if type(config) ~= "table" then
+        table.insert(problems, "config.lua invalid")
+    end
+    if type(config.stations) ~= "table" or #config.stations == 0 then
+        table.insert(problems, "no stations configured")
+    end
+    if config.advancedNetwork then
+        if not loadProtocol() then
+            table.insert(problems, "protocol.lua missing or invalid")
+        end
+        if not openRednet() then
+            table.insert(problems, "wireless modem_x not found (modem_x must be wireless)")
+        end
+        for i, entry in ipairs(config.stations or {}) do
+            if entry.advanced then
+                if not findStation(entry) then
+                    table.insert(problems, "station " .. i .. " not found")
+                end
+                if not findInventory(entry) then
+                    table.insert(problems, "inventory " .. i .. " not found")
+                end
+                if not entry.trainStoragePeripheral or not peripheral.isPresent(entry.trainStoragePeripheral) then
+                    table.insert(problems, "train storage " .. i .. " not found")
+                end
+            end
+        end
+    end
+
+    if #problems > 0 then
+        term.clear()
+        term.setCursorPos(1, 1)
+        print("CLIENT SELF-CHECK FAILED")
+        print()
+        for _, problem in ipairs(problems) do
+            print("- " .. problem)
+        end
+        error("Client self-check failed")
+    end
+end
+
+selfCheck()
 
 term.clear()
 term.setCursorPos(1, 1)

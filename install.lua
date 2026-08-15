@@ -88,6 +88,30 @@ local function askYesNo(prompt, default)
     end
 end
 
+local function normalizeResourceName(name)
+    name = tostring(name or "")
+    local prefix, value = name:match("^([^:]+):(.+)$")
+    if prefix and value then
+        return value
+    end
+    return name
+end
+
+local function findWirelessModem()
+    for _, name in ipairs(peripheral.getNames()) do
+        if name:match("^modem_%d+$") and peripheral.getType(name) == "modem" then
+            local modem = peripheral.wrap(name)
+            if modem then
+                local ok, wireless = pcall(function() return modem.isWireless() end)
+                if ok and wireless == true then
+                    return name
+                end
+            end
+        end
+    end
+    return nil
+end
+
 local function safeReadFile(path)
     if not fs.exists(path) then
         return nil
@@ -511,10 +535,7 @@ local function loadProtocol()
 end
 
 local function openRednetForInstall()
-    local modem
-    for _, name in ipairs(peripheral.getNames()) do
-        if peripheral.getType(name) == "modem" then modem = name; break end
-    end
+    local modem = findWirelessModem()
     if not modem then return nil end
     if not rednet.isOpen(modem) then rednet.open(modem) end
     return modem
@@ -633,7 +654,7 @@ local function configureAdvancedStations(config)
         print("Station: "..station.stationName)
         print("Item:    "..station.item)
         print()
-        local resourceType=ask("Resource type",station.item)
+        local resourceType=normalizeResourceName(ask("Resource type",station.item))
         local resourceKind=ask("Resource kind (item/fluid)","item")
         if resourceKind~="item" and resourceKind~="fluid" then resourceKind="item" end
         local factoryId=ask("Factory identifier",station.id)
@@ -780,6 +801,38 @@ local function bindStation(config, existingIndex)
 end
 
 --------------------------------------------------
+-- Startup helpers
+--------------------------------------------------
+
+local function createClientStartup()
+    local file = fs.open("/startup.lua", "w")
+    if not file then
+        error("Unable to create startup.lua")
+    end
+
+    file.writeLine('if fs.exists("config.lua") and fs.exists("station.lua") then')
+    file.writeLine('    shell.run("station.lua")')
+    file.writeLine('else')
+    file.writeLine('    shell.run("install.lua")')
+    file.writeLine('end')
+    file.close()
+end
+
+local function createServerStartup()
+    local file = fs.open("/startup.lua", "w")
+    if not file then
+        error("Unable to create startup.lua")
+    end
+
+    file.writeLine('shell.run("server.lua")')
+    file.close()
+end
+
+local function createStartup()
+    createClientStartup()
+end
+
+--------------------------------------------------
 -- Install station program from disk
 --------------------------------------------------
 
@@ -815,20 +868,7 @@ local function installServerProgram()
         fs.delete(PROTOCOL_PATH)
         fs.copy("/disk/protocol.lua", PROTOCOL_PATH)
     end
-end
-
---------------------------------------------------
--- Startup menu file
---------------------------------------------------
-
-local function createStartup()
-    local file = fs.open("/startup.lua", "w")
-    if not file then
-        error("Unable to create startup.lua")
-    end
-
-    file.writeLine('shell.run("install.lua")')
-    file.close()
+    createServerStartup()
 end
 
 --------------------------------------------------
