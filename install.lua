@@ -97,6 +97,16 @@ local function normalizeResourceName(name)
     return name
 end
 
+local function normalizeResourceKind(kind)
+    local value = string.lower(tostring(kind or "item"))
+    value = value:gsub("^%s+", "")
+    value = value:gsub("%s+$", "")
+    if value == "item" or value == "fluid" then
+        return value
+    end
+    return "item"
+end
+
 local validRedstoneSides = { "front", "back", "left", "right", "top", "bottom" }
 
 local function normalizeRedstoneSide(side)
@@ -430,7 +440,7 @@ local function scanInventories()
     return inventories
 end
 
-local function selectInventory(excludedPeripheralName)
+local function selectInventory(excludedPeripheralName, resourceKind)
     local pageSize = 2
     local page = 1
 
@@ -446,7 +456,9 @@ local function selectInventory(excludedPeripheralName)
         local visible = {}
         for _, inventory in ipairs(inventories) do
             if inventory.peripheralName ~= excludedPeripheralName then
-                table.insert(visible, inventory)
+                if not resourceKind or inventory.kind == resourceKind then
+                    table.insert(visible, inventory)
+                end
             end
         end
 
@@ -908,8 +920,7 @@ local function configureAdvancedStations(config)
         print("Item:    "..station.item)
         print()
         local resourceType=normalizeResourceName(ask("Resource type",station.item))
-        local resourceKind=ask("Resource kind (item/fluid)","item")
-        if resourceKind~="item" and resourceKind~="fluid" then resourceKind="item" end
+        local resourceKind=normalizeResourceKind(ask("Resource kind (item/fluid)", "item"))
         local factoryId=ask("Factory identifier",station.stationName)
         local requestName=resourceType.."_Request_"..factoryId
         local waitingName="WATTING_"..requestName
@@ -1004,7 +1015,8 @@ local function bindStation(config, existingIndex)
     end
 
     local oldInventory = existing and existing.inventoryPeripheral or nil
-    local selectedInventory = selectInventory(nil)
+    local resourceKind = normalizeResourceKind(ask("Resource kind (item/fluid)", "item"))
+    local selectedInventory = selectInventory(nil, resourceKind)
 
     if not selectedInventory then
         return nil

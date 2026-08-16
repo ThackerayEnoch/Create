@@ -70,6 +70,59 @@ local function readFluidTanks(device)
     return nil
 end
 
+local function fluidFromTankEntry(tank)
+    if type(tank) ~= "table" then
+        return nil
+    end
+
+    local nested = type(tank.fluid) == "table" and tank.fluid or nil
+    local name = tank.name or tank.Name or tank.id
+    if not name and nested then
+        name = nested.name or nested.Name or nested.id
+    end
+
+    local amount = tonumber(tank.amount or tank.Amount)
+    if not amount and nested then
+        amount = tonumber(nested.amount or nested.Amount)
+    end
+
+    local capacity = tonumber(tank.capacity or tank.Capacity)
+    if not capacity and nested then
+        capacity = tonumber(nested.capacity or nested.Capacity)
+    end
+
+    return {
+        name = name and normalizeResourceName(name) or nil,
+        amount = amount or 0,
+        capacity = capacity or 0
+    }
+end
+
+local function normalizeFluidEntries(tanks)
+    if type(tanks) ~= "table" then
+        return {}
+    end
+
+    local entries = {}
+
+    -- Some peripherals return a single tank object instead of an array/map.
+    local single = fluidFromTankEntry(tanks)
+    if single and (single.name or single.amount > 0 or single.capacity > 0) then
+        table.insert(entries, single)
+    end
+
+    for _, raw in pairs(tanks) do
+        if type(raw) == "table" then
+            local entry = fluidFromTankEntry(raw)
+            if entry and (entry.name or entry.amount > 0 or entry.capacity > 0) then
+                table.insert(entries, entry)
+            end
+        end
+    end
+
+    return entries
+end
+
 local function findWirelessModem()
     for _, name in ipairs(peripheral.getNames()) do
         if name:match("^modem_%d+$") and peripheral.getType(name) == "modem" then
@@ -236,9 +289,10 @@ local function scanResourceNames(storage)
     else
         local tanks = readFluidTanks(storage.peripheral)
         if type(tanks) == "table" then
-            for _, tank in pairs(tanks) do
-                if tank and tank.name then
-                    local resource = normalizeResourceName(tank.name)
+            local entries = normalizeFluidEntries(tanks)
+            for _, entry in ipairs(entries) do
+                if entry.name then
+                    local resource = entry.name
                     if not seen[resource] then
                         seen[resource] = true
                         table.insert(result, resource)
@@ -526,16 +580,26 @@ local function isFull()
         local tanks = readFluidTanks(storage)
         if type(tanks) ~= "table" then return false end
 
+        local entries = normalizeFluidEntries(tanks)
+        if #entries == 0 then return false end
+
         local totalCapacity = 0
         local totalAmount = 0
-        for _, tank in pairs(tanks) do
-            if tank then
-                totalCapacity = totalCapacity + (tonumber(tank.capacity) or 0)
-                if normalizeResourceName(tank.name) == resourceType then
-                    totalAmount = totalAmount + (tonumber(tank.amount) or 0)
-                end
+        local resourceCapacity = 0
+        local resourceAmount = 0
+        for _, entry in ipairs(entries) do
+            totalCapacity = totalCapacity + entry.capacity
+            totalAmount = totalAmount + entry.amount
+            if entry.name == resourceType then
+                resourceCapacity = resourceCapacity + entry.capacity
+                resourceAmount = resourceAmount + entry.amount
             end
         end
+
+        if resourceCapacity > 0 then
+            return resourceAmount >= resourceCapacity
+        end
+
         return totalCapacity > 0 and totalAmount >= totalCapacity
     end
 

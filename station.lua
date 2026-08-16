@@ -310,6 +310,10 @@ local function loadConfig()
         -- Older configurations may not have physicalStation.
         -- The station can still be recovered by its logical stationName.
         entry.physicalStation = entry.physicalStation or nil
+        entry.resourceKind = tostring(entry.resourceKind or "item"):lower()
+        if entry.resourceKind ~= "item" and entry.resourceKind ~= "fluid" then
+            entry.resourceKind = "item"
+        end
         entry.redstoneSide = tostring(entry.redstoneSide or "back"):lower()
         if entry.redstoneSide ~= "front" and entry.redstoneSide ~= "back" and entry.redstoneSide ~= "left" and entry.redstoneSide ~= "right" and entry.redstoneSide ~= "top" and entry.redstoneSide ~= "bottom" then
             entry.redstoneSide = "back"
@@ -390,6 +394,22 @@ local function findInventory(entry)
         return nil
     end
 
+    local kind = tostring(entry.resourceKind or entry.inventoryType or "item")
+    local isFluid = string.lower(kind) == "fluid"
+
+    if isFluid then
+        local tanks = readFluidTanks(inventory)
+        if type(tanks) == "table" then
+            return inventory
+        end
+        return nil
+    end
+
+    local tanks = readFluidTanks(inventory)
+    if type(tanks) == "table" then
+        return inventory
+    end
+
     local ok = pcall(function()
         inventory.list()
     end)
@@ -405,7 +425,24 @@ end
 -- Inventory
 --------------------------------------------------
 
-local function getItemCount(inventory, itemName)
+local function getItemCount(inventory, itemName, isFluid)
+    local tanks = readFluidTanks(inventory)
+    if isFluid or type(tanks) == "table" then
+        local fluidTable = type(tanks) == "table" and tanks or {}
+        if type(tanks) ~= "table" then
+            return nil
+        end
+
+        local total = 0
+        for _, tank in pairs(fluidTable) do
+            if tank and normalizeResourceName(tank.name) == normalizeResourceName(itemName) then
+                total = total + (tonumber(tank.amount) or 0)
+            end
+        end
+
+        return total
+    end
+
     local ok, items = pcall(function()
         return inventory.list()
     end)
@@ -417,8 +454,8 @@ local function getItemCount(inventory, itemName)
     local total = 0
 
     for _, item in pairs(items) do
-        if item and item.name == itemName then
-            total = total + (item.count or 0)
+        if item and normalizeResourceName(item.name) == normalizeResourceName(itemName) then
+            total = total + (tonumber(item.count) or 0)
         end
     end
 
@@ -1276,7 +1313,7 @@ if config.advancedNetwork then
             local station = findStation(entry)
             local inventory = findInventory(entry)
             if station and inventory then
-                local count = getItemCount(inventory, entry.item)
+                local count = getItemCount(inventory, entry.item, entry.resourceKind == "fluid")
                 if count ~= nil then
                     local percent = getPercentage(count, entry.capacity)
                     local _, result = pcall(advancedState, station, entry, inventory, count, percent)
@@ -1318,7 +1355,7 @@ local function controllerTick()
         elseif not inventory then
             log("[" .. i .. "] Inventory not found: " .. entry.inventoryPeripheral)
         else
-            local count = getItemCount(inventory, entry.item)
+            local count = getItemCount(inventory, entry.item, entry.resourceKind == "fluid")
 
             if count == nil then
                 log("[" .. i .. "] Failed to read inventory: " .. entry.inventoryPeripheral)
