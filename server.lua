@@ -349,19 +349,43 @@ local function installServer()
     local storage = selectStorage()
     local resource = selectResource(storage)
     local containerSize = 0
-    local sizeOk, size = pcall(function() return storage.peripheral.size() end)
-    if sizeOk and tonumber(size) then
-        containerSize = tonumber(size)
+    if storage.kind == "fluid" then
+        local tanks = readFluidTanks(storage.peripheral)
+        if type(tanks) == "table" then
+            local entries = normalizeFluidEntries(tanks)
+            local resourceCapacity = 0
+            local totalCapacity = 0
+            for _, entry in ipairs(entries) do
+                totalCapacity = totalCapacity + (tonumber(entry.capacity) or 0)
+                if entry.name == resource then
+                    resourceCapacity = resourceCapacity + (tonumber(entry.capacity) or 0)
+                end
+            end
+            if resourceCapacity > 0 then
+                containerSize = resourceCapacity
+            elseif totalCapacity > 0 then
+                containerSize = totalCapacity
+            end
+        end
+    else
+        local sizeOk, size = pcall(function() return storage.peripheral.size() end)
+        if sizeOk and tonumber(size) then
+            containerSize = tonumber(size)
+        end
     end
 
     clearScreen()
     print("=== Supply Server Setup ===")
     print()
     local factoryId = ask("Factory identifier", "Factory")
-    local containerSize = tonumber(ask("Train container size", tostring(containerSize > 0 and containerSize or 0)))
+    local sizePrompt = "Train container size"
+    if storage.kind == "fluid" then
+        sizePrompt = "Train fluid target (mB, 0 = auto full tank)"
+    end
+    local containerSize = tonumber(ask(sizePrompt, tostring(containerSize > 0 and containerSize or 0)))
     if not containerSize or containerSize <= 0 then
         containerSize = 0
-        print("Container size must be a positive number; using detected value if available.")
+        print("Container size disabled; server will use automatic full-capacity detection.")
     end
     local requestName = resource .. "_Request_" .. factoryId
     local supplyName = resource .. "_Supply"
@@ -583,6 +607,7 @@ local function isFull()
         local entries = normalizeFluidEntries(tanks)
         if #entries == 0 then return false end
 
+        local savedSize = tonumber(config.containerSize) or 0
         local totalCapacity = 0
         local totalAmount = 0
         local resourceCapacity = 0
@@ -594,6 +619,10 @@ local function isFull()
                 resourceCapacity = resourceCapacity + entry.capacity
                 resourceAmount = resourceAmount + entry.amount
             end
+        end
+
+        if savedSize > 0 then
+            return resourceAmount >= savedSize
         end
 
         if resourceCapacity > 0 then
