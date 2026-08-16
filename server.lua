@@ -515,6 +515,13 @@ local function setStatus(status)
     currentStatus = status
 end
 
+local function shouldShowOnDisplay(messageType, messageResource)
+    if type(messageType) ~= "string" then return false end
+    if messageType == protocol.HELLO then return false end
+    if messageResource == nil then return false end
+    return normalizeResourceName(messageResource) == resourceType
+end
+
 local function stationSetName(name)
     local ok, err = pcall(function() station.setStationName(name) end)
     if ok then return true end
@@ -682,9 +689,12 @@ while true do
     if type(message) == "table" then
         local messageType = tostring(message.type or "UNKNOWN")
         local messageResource = message.resourceType and normalizeResourceName(message.resourceType) or nil
-        addLog("RX #" .. tostring(sender) .. " " .. messageType ..
-            (messageResource and (" [" .. messageResource .. "]") or "") ..
-            " protocol=" .. tostring(message.protocol))
+
+        if shouldShowOnDisplay(messageType, messageResource) then
+            addLog("RX #" .. tostring(sender) .. " " .. messageType ..
+                (messageResource and (" [" .. messageResource .. "]") or "") ..
+                " protocol=" .. tostring(message.protocol))
+        end
 
         if messageType == protocol.HELLO then
             sendAnswer(sender)
